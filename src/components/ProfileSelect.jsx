@@ -153,10 +153,10 @@ const ProfileSelect = ({ profiles, onSelectProfile, onProfilesChange }) => {
             >
                 {/* Logo */}
                 <div className="flex items-center justify-center gap-3 mb-8">
-                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--color-accent)] to-blue-600 flex items-center justify-center">
+                    <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[var(--color-accent)] to-blue-600 flex items-center justify-center shadow-lg shadow-purple-500/20">
                         <Tv className="w-7 h-7 text-white" />
                     </div>
-                    <span className="text-3xl font-bold text-gradient">OBSIDIAN</span>
+                    <span className="text-3xl font-bold text-gradient tracking-wide">AURA</span>
                 </div>
 
                 <h1 className="text-4xl font-bold mb-2">

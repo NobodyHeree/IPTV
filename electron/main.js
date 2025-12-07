@@ -267,8 +267,12 @@ function createWindow() {
         show: false
     });
 
-    const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
-    mainWindow.loadURL(startUrl);
+    if (app.isPackaged) {
+        mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+    } else {
+        const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
+        mainWindow.loadURL(startUrl);
+    }
 
     // CORS bypass for HLS.js
     session.defaultSession.webRequest.onHeadersReceived({ urls: ['*://*/*'] }, (details, callback) => {

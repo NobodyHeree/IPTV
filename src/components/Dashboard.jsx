@@ -9,22 +9,19 @@ import Player from './Player';
 import ErrorBoundary from './ErrorBoundary';
 import EpgPanel from './EpgPanel';
 import { QualityBadge, ChannelInitials, RowSkeleton, GridSkeleton, EmptyState } from './UIComponents';
+import AmbientBackground from './AmbientBackground';
 
 // Country code to flag emoji converter
+// Country code to flag image URL converter
 const getCountryFlag = (code) => {
-    const flags = {
-        'FR': '🇫🇷', 'US': '🇺🇸', 'UK': '🇬🇧', 'GB': '🇬🇧', 'DE': '🇩🇪', 'ES': '🇪🇸', 'IT': '🇮🇹',
-        'PT': '🇵🇹', 'NL': '🇳🇱', 'BE': '🇧🇪', 'CH': '🇨🇭', 'CA': '🇨🇦', 'AU': '🇦🇺', 'BR': '🇧🇷',
-        'MX': '🇲🇽', 'AR': '🇦🇷', 'PL': '🇵🇱', 'RU': '🇷🇺', 'TR': '🇹🇷', 'IN': '🇮🇳', 'JP': '🇯🇵',
-        'KR': '🇰🇷', 'CN': '🇨🇳', 'SA': '🇸🇦', 'AE': '🇦🇪', 'EG': '🇪🇬', 'MA': '🇲🇦', 'DZ': '🇩🇿',
-        'TN': '🇹🇳', 'SN': '🇸🇳', 'CI': '🇨🇮', 'CM': '🇨🇲', 'NG': '🇳🇬', 'GH': '🇬🇭', 'KE': '🇰🇪',
-        'ZA': '🇿🇦', 'AL': '🇦🇱', 'RO': '🇷🇴', 'BG': '🇧🇬', 'HR': '🇭🇷', 'RS': '🇷🇸', 'BA': '🇧🇦',
-        'SI': '🇸🇮', 'SK': '🇸🇰', 'CZ': '🇨🇿', 'HU': '🇭🇺', 'AT': '🇦🇹', 'GR': '🇬🇷', 'SE': '🇸🇪',
-        'NO': '🇳🇴', 'DK': '🇩🇰', 'FI': '🇫🇮', 'IE': '🇮🇪', 'IL': '🇮🇱', 'PK': '🇵🇰', 'BD': '🇧🇩',
-        'VN': '🇻🇳', 'TH': '🇹🇭', 'ID': '🇮🇩', 'MY': '🇲🇾', 'PH': '🇵🇭', 'AF': '🇦🇫', 'AM': '🇦🇲',
-        'AZ': '🇦🇿', 'GE': '🇬🇪', 'KZ': '🇰🇿', 'UZ': '🇺🇿', 'OTHER': '🌍'
+    if (!code || code === 'OTHER') return null;
+    // Handle special cases
+    const map = {
+        'UK': 'gb',
+        'COM': 'us', // frequent mixup
     };
-    return flags[code] || '🌍';
+    const countryCode = map[code] || code.toLowerCase();
+    return `https://flagcdn.com/w40/${countryCode}.png`;
 };
 
 const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
@@ -41,6 +38,49 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
     const [recentlyWatched, setRecentlyWatched] = useState([]);
     const [showFavoritesView, setShowFavoritesView] = useState(false);
     const [epgChannel, setEpgChannel] = useState(null); // Channel for EPG panel
+
+    const [epgData, setEpgData] = useState({});
+    const [hoveredChannel, setHoveredChannel] = useState(null);
+
+    // Fetch EPG when channels are loaded
+    useEffect(() => {
+        const fetchEpg = async () => {
+            if (channels.length === 0) return;
+            try {
+                // Fetch 2 hours of EPG to get current programs
+                const epg = await window.api.getAllEpg(2);
+                if (epg && Array.isArray(epg)) {
+                    // Map EPG data for easier lookup: channelId -> current program
+                    const epgMap = {};
+                    const now = Math.floor(Date.now() / 1000);
+
+                    epg.forEach(program => {
+                        const start = parseInt(program.start_timestamp, 10);
+                        const end = parseInt(program.stop_timestamp, 10);
+
+                        // Check if program is currently playing
+                        if (now >= start && now < end) {
+                            epgMap[program.ch_id] = {
+                                title: program.name,
+                                start: start,
+                                end: end,
+                                duration: end - start
+                            };
+                        }
+                    });
+                    setEpgData(epgMap);
+                }
+            } catch (err) {
+                console.error("Failed to fetch EPG", err);
+            }
+        };
+
+        fetchEpg();
+
+        // Refresh EPG every 5 minutes
+        const interval = setInterval(fetchEpg, 5 * 60 * 1000);
+        return () => clearInterval(interval);
+    }, [channels]);
 
     // Get current channel index and navigation helpers
     const currentChannelIndex = useMemo(() => {
@@ -239,403 +279,426 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
     const frGroup = countryGroups.find(g => g.code === 'FR');
 
     return (
-        <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-background)]">
-            {/* Sidebar */}
-            <motion.div
-                className="h-full flex flex-col z-20 border-r border-white/5"
-                style={{ backgroundColor: 'var(--color-surface-solid)' }}
-                initial={{ width: 72 }}
-                animate={{ width: sidebarExpanded ? 260 : 72 }}
-                onHoverStart={() => setSidebarExpanded(true)}
-                onHoverEnd={() => setSidebarExpanded(false)}
-                transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-            >
-                {/* Logo */}
-                <div className="h-20 flex items-center justify-center border-b border-white/5">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--color-accent)] to-blue-600 flex items-center justify-center">
-                            <Tv className="w-5 h-5 text-white" />
-                        </div>
-                        <AnimatePresence>
-                            {sidebarExpanded && (
-                                <motion.span
-                                    initial={{ opacity: 0, width: 0 }}
-                                    animate={{ opacity: 1, width: 'auto' }}
-                                    exit={{ opacity: 0, width: 0 }}
-                                    className="font-bold text-lg tracking-wide text-gradient overflow-hidden whitespace-nowrap"
-                                >
-                                    OBSIDIAN
-                                </motion.span>
-                            )}
-                        </AnimatePresence>
-                    </div>
-                </div>
+        <div className="relative min-h-screen bg-[var(--color-surface-solid)] overflow-hidden">
+            {/* Dynamic Ambiance */}
+            <AmbientBackground imageUrl={hoveredChannel?.logo || (featuredChannels.length > 0 ? featuredChannels[0].logo : null)} />
 
-                {/* Nav Items */}
-                <div className="flex-1 overflow-y-auto py-4 scrollbar-hide">
-                    <NavItem
-                        icon={Home}
-                        label="Accueil"
-                        active={!selectedCountry && !searchQuery && !showFavoritesView}
-                        onClick={() => { setSelectedCountry(null); setSelectedCategory(null); setSearchQuery(''); setShowFavoritesView(false); }}
-                        expanded={sidebarExpanded}
-                    />
-                    <NavItem
-                        icon={Heart}
-                        label="Favoris"
-                        count={favorites.length}
-                        active={showFavoritesView}
-                        onClick={() => { setShowFavoritesView(true); setSelectedCountry(null); setSelectedCategory(null); setSearchQuery(''); }}
-                        expanded={sidebarExpanded}
-                    />
-
-                    <div className="my-4 mx-4 border-t border-white/5" />
-
-                    {sidebarExpanded && (
-                        <div className="px-6 mb-3 text-[10px] font-semibold text-[var(--color-text-muted)] uppercase tracking-widest">
-                            Pays
-                        </div>
-                    )}
-
-                    {countryGroups.map(country => (
-                        <div
-                            key={country.code}
-                            onClick={() => { setSelectedCountry(country); setSelectedCategory(null); setSearchQuery(''); setShowFavoritesView(false); }}
-                            className={`group flex items-center gap-3 px-3 py-2.5 mx-2 rounded-xl cursor-pointer transition-all duration-200 ${selectedCountry?.code === country.code ? 'bg-[var(--color-accent)]/20 text-white' : 'hover:bg-white/5 text-[var(--color-text-muted)]'}`}
-                        >
-                            <span className="text-xl">{getCountryFlag(country.code)}</span>
-                            {sidebarExpanded && (
-                                <>
-                                    <span className={`text-sm font-medium flex-1 ${selectedCountry?.code === country.code ? 'text-white' : 'text-[var(--color-text-secondary)]'}`}>
-                                        {country.code}
-                                    </span>
-                                    <span className="text-[10px] text-[var(--color-text-muted)] bg-white/5 px-2 py-0.5 rounded-full">
-                                        {country.categories.length}
-                                    </span>
-                                </>
-                            )}
-                        </div>
-                    ))}
-                </div>
-
-                {/* Footer */}
-                <div className="p-3 border-t border-white/5 space-y-1">
-                    {profile && (
-                        <div className="flex items-center gap-3 px-3 py-2 mb-2">
-                            <div className={`w-8 h-8 rounded-lg bg-${profile.avatar || 'purple'}-500 flex items-center justify-center`}>
-                                <span className="text-xs font-bold">{profile.name?.charAt(0).toUpperCase()}</span>
+            <div className="relative z-10 flex h-screen w-screen overflow-hidden bg-transparent">
+                {/* Sidebar */}
+                <motion.div
+                    className="h-full flex flex-col z-20 border-r border-white/5"
+                    style={{ backgroundColor: 'var(--color-surface-solid)' }}
+                    initial={{ width: 72 }}
+                    animate={{ width: sidebarExpanded ? 260 : 72 }}
+                    onHoverStart={() => setSidebarExpanded(true)}
+                    onHoverEnd={() => setSidebarExpanded(false)}
+                    transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                >
+                    {/* Logo */}
+                    <div className="h-20 flex items-center justify-center border-b border-white/5">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[var(--color-accent)] to-blue-600 flex items-center justify-center shadow-lg shadow-purple-500/20">
+                                <Tv className="w-5 h-5 text-white" />
                             </div>
-                            {sidebarExpanded && (
-                                <span className="text-sm font-medium text-[var(--color-text-secondary)] truncate">
-                                    {profile.name}
-                                </span>
-                            )}
+                            <AnimatePresence>
+                                {sidebarExpanded && (
+                                    <motion.span
+                                        initial={{ opacity: 0, width: 0 }}
+                                        animate={{ opacity: 1, width: 'auto' }}
+                                        exit={{ opacity: 0, width: 0 }}
+                                        className="font-bold text-xl tracking-wider text-gradient overflow-hidden whitespace-nowrap"
+                                    >
+                                        AURA
+                                    </motion.span>
+                                )}
+                            </AnimatePresence>
                         </div>
-                    )}
-                    {onSwitchProfile && (
-                        <NavItem icon={Users} label="Changer de profil" onClick={onSwitchProfile} expanded={sidebarExpanded} />
-                    )}
-                    <NavItem icon={LogOut} label="Déconnexion" onClick={onLogout} expanded={sidebarExpanded} />
-                </div>
-            </motion.div>
-
-            {/* Main Content */}
-            <div className="flex-1 flex flex-col relative overflow-hidden">
-                {/* Search Bar */}
-                <div className="absolute top-0 left-0 right-0 h-20 z-10 flex items-center px-8 bg-gradient-to-b from-[var(--color-background)] via-[var(--color-background)]/80 to-transparent pointer-events-none">
-                    <div className="pointer-events-auto flex items-center glass-card px-5 py-3 w-[400px] transition-all duration-300 focus-within:ring-2 focus-within:ring-[var(--color-accent)]/50 focus-within:shadow-[0_0_20px_rgba(139,92,246,0.3)]">
-                        <Search className="w-4 h-4 text-[var(--color-text-muted)] mr-3" />
-                        <input
-                            type="text"
-                            placeholder="Rechercher une chaîne..."
-                            className="bg-transparent border-none outline-none text-sm w-full placeholder-[var(--color-text-muted)] text-white"
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                        />
-                        {searchQuery && (
-                            <X className="w-4 h-4 text-[var(--color-text-muted)] cursor-pointer hover:text-white transition-colors" onClick={() => setSearchQuery('')} />
-                        )}
                     </div>
-                </div>
 
-                {/* Content Area */}
-                <div className="flex-1 overflow-y-auto pt-24 pb-8">
-                    {/* FAVORITES VIEW */}
-                    {showFavoritesView && (
-                        <div className="px-8 space-y-6">
-                            <h2 className="text-3xl font-bold flex items-center gap-4">
-                                <Heart className="w-8 h-8 text-red-500" />
-                                Mes Favoris
-                            </h2>
-                            {favorites.length > 0 ? (
-                                <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                                    {favorites.map(ch => (
-                                        <ChannelCard
-                                            key={ch.id}
-                                            channel={ch}
-                                            onClick={() => handlePlayChannel(ch)}
-                                            isFavorite={true}
-                                            onToggleFavorite={toggleFavorite}
+                    {/* Nav Items */}
+                    <div className="flex-1 overflow-y-auto py-4 scrollbar-hide">
+                        <NavItem
+                            icon={Home}
+                            label="Accueil"
+                            active={!selectedCountry && !searchQuery && !showFavoritesView}
+                            onClick={() => { setSelectedCountry(null); setSelectedCategory(null); setSearchQuery(''); setShowFavoritesView(false); }}
+                            expanded={sidebarExpanded}
+                        />
+                        <NavItem
+                            icon={Heart}
+                            label="Favoris"
+                            count={favorites.length}
+                            active={showFavoritesView}
+                            onClick={() => { setShowFavoritesView(true); setSelectedCountry(null); setSelectedCategory(null); setSearchQuery(''); }}
+                            expanded={sidebarExpanded}
+                        />
+
+                        <div className="my-4 mx-4 border-t border-white/5" />
+
+                        {sidebarExpanded && (
+                            <div className="px-6 mb-3 text-[10px] font-semibold text-[var(--color-text-muted)] uppercase tracking-widest">
+                                Pays
+                            </div>
+                        )}
+
+                        {countryGroups.map(country => (
+                            <div
+                                key={country.code}
+                                onClick={() => { setSelectedCountry(country); setSelectedCategory(null); setSearchQuery(''); setShowFavoritesView(false); }}
+                                className={`group flex items-center ${sidebarExpanded ? 'px-3 gap-3 justify-start' : 'justify-center'} py-2.5 mx-2 rounded-xl cursor-pointer transition-all duration-200 ${selectedCountry?.code === country.code ? 'bg-[var(--color-accent)]/20 text-white' : 'hover:bg-white/5 text-[var(--color-text-muted)]'}`}
+                            >
+                                <div className="flex-shrink-0 w-6 flex justify-center">
+                                    {getCountryFlag(country.code) ? (
+                                        <img
+                                            src={getCountryFlag(country.code)}
+                                            alt={country.code}
+                                            className="w-5 h-auto rounded-sm shadow-sm opacity-90 group-hover:opacity-100 transition-opacity"
+                                            onError={(e) => { e.target.style.display = 'none'; e.target.parentNode.innerHTML = '🌍'; }}
                                         />
-                                    ))}
+                                    ) : (
+                                        <Globe className="w-5 h-5 opacity-70" />
+                                    )}
                                 </div>
-                            ) : (
-                                <div className="text-center text-[var(--color-text-muted)] py-20">
-                                    <Heart className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                                    <p className="text-xl">Aucun favori pour l'instant</p>
-                                    <p className="mt-2">Cliquez sur le ❤️ d'une chaîne pour l'ajouter</p>
+                                {sidebarExpanded && (
+                                    <>
+                                        <span className={`text-sm font-medium flex-1 ${selectedCountry?.code === country.code ? 'text-white' : 'text-[var(--color-text-secondary)]'}`}>
+                                            {country.code}
+                                        </span>
+                                        <span className="text-[10px] text-[var(--color-text-muted)] bg-white/5 px-2 py-0.5 rounded-full">
+                                            {country.categories.length}
+                                        </span>
+                                    </>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Footer */}
+                    <div className="p-3 border-t border-white/5 space-y-1">
+                        {profile && (
+                            <div className="flex items-center gap-3 px-3 py-2 mb-2">
+                                <div className={`w-8 h-8 rounded-lg bg-${profile.avatar || 'purple'}-500 flex items-center justify-center`}>
+                                    <span className="text-xs font-bold">{profile.name?.charAt(0).toUpperCase()}</span>
                                 </div>
+                                {sidebarExpanded && (
+                                    <span className="text-sm font-medium text-[var(--color-text-secondary)] truncate">
+                                        {profile.name}
+                                    </span>
+                                )}
+                            </div>
+                        )}
+                        {onSwitchProfile && (
+                            <NavItem icon={Users} label="Changer de profil" onClick={onSwitchProfile} expanded={sidebarExpanded} />
+                        )}
+                        <NavItem icon={LogOut} label="Déconnexion" onClick={onLogout} expanded={sidebarExpanded} />
+                    </div>
+                </motion.div>
+
+                {/* Main Content */}
+                <div className="flex-1 flex flex-col relative overflow-hidden">
+                    {/* Search Bar */}
+                    <div className="absolute top-0 left-0 right-0 h-20 z-10 flex items-center px-8 bg-gradient-to-b from-[var(--color-background)] via-[var(--color-background)]/80 to-transparent pointer-events-none">
+                        <div className="pointer-events-auto flex items-center glass-card px-5 py-3 w-[400px] transition-all duration-300 focus-within:ring-2 focus-within:ring-[var(--color-accent)]/50 focus-within:shadow-[0_0_20px_rgba(139,92,246,0.3)]">
+                            <Search className="w-4 h-4 text-[var(--color-text-muted)] mr-3" />
+                            <input
+                                type="text"
+                                placeholder="Rechercher une chaîne..."
+                                className="bg-transparent border-none outline-none text-sm w-full placeholder-[var(--color-text-muted)] text-white"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                            />
+                            {searchQuery && (
+                                <X className="w-4 h-4 text-[var(--color-text-muted)] cursor-pointer hover:text-white transition-colors" onClick={() => setSearchQuery('')} />
                             )}
                         </div>
-                    )}
+                    </div>
 
-                    {/* NETFLIX-STYLE HOME */}
-                    {!selectedCountry && !selectedCategory && !searchQuery && !showFavoritesView && (
-                        <div className="space-y-10">
-                            {/* Hero Banner */}
-                            {/* Hero Banner */}
-                            <motion.div
-                                initial={{ opacity: 0, y: 20 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ duration: 0.6 }}
-                                className="relative h-[420px] mx-8 rounded-3xl overflow-hidden glass-card"
-                            >
-                                {/* Animated Background Orbs */}
-                                <motion.div
-                                    animate={{
-                                        scale: [1, 1.2, 1],
-                                        opacity: [0.3, 0.5, 0.3],
-                                    }}
-                                    transition={{ duration: 8, repeat: Infinity }}
-                                    className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-purple-600/20 blur-[100px]"
-                                />
-                                <motion.div
-                                    animate={{
-                                        scale: [1, 1.3, 1],
-                                        opacity: [0.2, 0.4, 0.2],
-                                        x: [0, 50, 0]
-                                    }}
-                                    transition={{ duration: 10, repeat: Infinity, delay: 1 }}
-                                    className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-blue-600/10 blur-[80px]"
-                                />
+                    {/* Content Area */}
+                    <div className="flex-1 overflow-y-auto pt-24 pb-8">
+                        {/* FAVORITES VIEW */}
+                        {showFavoritesView && (
+                            <div className="px-8 space-y-6">
+                                <h2 className="text-3xl font-bold flex items-center gap-4">
+                                    <Heart className="w-8 h-8 text-red-500" />
+                                    Mes Favoris
+                                </h2>
+                                {favorites.length > 0 ? (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                                        {favorites.map(ch => (
+                                            <ChannelCard
+                                                key={ch.id}
+                                                channel={ch}
+                                                onClick={() => handlePlayChannel(ch)}
+                                                isFavorite={true}
+                                                onToggleFavorite={toggleFavorite}
+                                            />
+                                        ))}
+                                    </div>
+                                ) : (
+                                    <div className="text-center text-[var(--color-text-muted)] py-20">
+                                        <Heart className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                                        <p className="text-xl">Aucun favori pour l'instant</p>
+                                        <p className="mt-2">Cliquez sur le ❤️ d'une chaîne pour l'ajouter</p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
 
-                                <div className="absolute inset-0 bg-gradient-to-r from-[var(--color-background)]/90 via-[var(--color-background)]/40 to-transparent" />
-                                <div className="absolute inset-0 flex items-center p-16 relative z-10">
-                                    <div className="max-w-xl">
-                                        <motion.div
-                                            initial={{ opacity: 0, x: -20 }}
-                                            animate={{ opacity: 1, x: 0 }}
-                                            transition={{ delay: 0.2 }}
-                                            className="flex items-center gap-2 mb-4"
-                                        >
-                                            <Sparkles className="w-5 h-5 text-[var(--color-accent)] animate-pulse" />
-                                            <span className="text-sm font-semibold text-[var(--color-accent)] uppercase tracking-wider">Bienvenue</span>
-                                        </motion.div>
-                                        <motion.h1
-                                            initial={{ opacity: 0, y: 20 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            transition={{ delay: 0.3 }}
-                                            className="text-6xl font-bold mb-6 tracking-tight leading-tight"
-                                        >
-                                            Vos chaînes <span className="text-gradient">préférées</span>
-                                        </motion.h1>
-                                        <motion.p
-                                            initial={{ opacity: 0 }}
-                                            animate={{ opacity: 1 }}
-                                            transition={{ delay: 0.4 }}
-                                            className="text-xl text-[var(--color-text-secondary)] mb-10 leading-relaxed max-w-lg"
-                                        >
-                                            Accédez à des milliers de chaînes en direct, organisées par pays et catégorie.
-                                        </motion.p>
-                                        {frGroup && frGroup.categories[0] && (
-                                            <motion.button
+                        {/* NETFLIX-STYLE HOME */}
+                        {!selectedCountry && !selectedCategory && !searchQuery && !showFavoritesView && (
+                            <div className="space-y-10">
+                                {/* Hero Banner */}
+                                {/* Hero Banner */}
+                                <motion.div
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ duration: 0.6 }}
+                                    className="relative h-[420px] mx-8 rounded-3xl overflow-hidden glass-card"
+                                >
+                                    {/* Animated Background Orbs */}
+                                    <motion.div
+                                        animate={{
+                                            scale: [1, 1.2, 1],
+                                            opacity: [0.3, 0.5, 0.3],
+                                        }}
+                                        transition={{ duration: 8, repeat: Infinity }}
+                                        className="absolute top-[-20%] right-[-10%] w-[600px] h-[600px] rounded-full bg-purple-600/20 blur-[100px]"
+                                    />
+                                    <motion.div
+                                        animate={{
+                                            scale: [1, 1.3, 1],
+                                            opacity: [0.2, 0.4, 0.2],
+                                            x: [0, 50, 0]
+                                        }}
+                                        transition={{ duration: 10, repeat: Infinity, delay: 1 }}
+                                        className="absolute bottom-[-20%] left-[-10%] w-[500px] h-[500px] rounded-full bg-blue-600/10 blur-[80px]"
+                                    />
+
+                                    <div className="absolute inset-0 bg-gradient-to-r from-[var(--color-background)]/90 via-[var(--color-background)]/40 to-transparent" />
+                                    <div className="absolute inset-0 flex items-center p-16 relative z-10">
+                                        <div className="max-w-xl">
+                                            <motion.div
+                                                initial={{ opacity: 0, x: -20 }}
+                                                animate={{ opacity: 1, x: 0 }}
+                                                transition={{ delay: 0.2 }}
+                                                className="flex items-center gap-2 mb-4"
+                                            >
+                                                <Sparkles className="w-5 h-5 text-[var(--color-accent)] animate-pulse" />
+                                                <span className="text-sm font-semibold text-[var(--color-accent)] uppercase tracking-wider">Bienvenue</span>
+                                            </motion.div>
+                                            <motion.h1
                                                 initial={{ opacity: 0, y: 20 }}
                                                 animate={{ opacity: 1, y: 0 }}
-                                                transition={{ delay: 0.5 }}
-                                                whileHover={{ scale: 1.05 }}
-                                                whileTap={{ scale: 0.95 }}
-                                                onClick={() => { setSelectedCountry(frGroup); setSelectedCategory(frGroup.categories[0]); }}
-                                                className="btn-primary flex items-center gap-3 px-8 py-4 text-lg shadow-lg shadow-purple-500/20 group"
+                                                transition={{ delay: 0.3 }}
+                                                className="text-6xl font-bold mb-6 tracking-tight leading-tight"
                                             >
-                                                <Play className="w-6 h-6 fill-current group-hover:scale-110 transition-transform" /> Regarder maintenant
-                                            </motion.button>
-                                        )}
+                                                Vos chaînes <span className="text-gradient">préférées</span>
+                                            </motion.h1>
+                                            <motion.p
+                                                initial={{ opacity: 0 }}
+                                                animate={{ opacity: 1 }}
+                                                transition={{ delay: 0.4 }}
+                                                className="text-xl text-[var(--color-text-secondary)] mb-10 leading-relaxed max-w-lg"
+                                            >
+                                                Accédez à des milliers de chaînes en direct, organisées par pays et catégorie.
+                                            </motion.p>
+                                            {frGroup && frGroup.categories[0] && (
+                                                <motion.button
+                                                    initial={{ opacity: 0, y: 20 }}
+                                                    animate={{ opacity: 1, y: 0 }}
+                                                    transition={{ delay: 0.5 }}
+                                                    whileHover={{ scale: 1.05 }}
+                                                    whileTap={{ scale: 0.95 }}
+                                                    onClick={() => { setSelectedCountry(frGroup); setSelectedCategory(frGroup.categories[0]); }}
+                                                    className="btn-primary flex items-center gap-3 px-8 py-4 text-lg shadow-lg shadow-purple-500/20 group"
+                                                >
+                                                    <Play className="w-6 h-6 fill-current group-hover:scale-110 transition-transform" /> Regarder maintenant
+                                                </motion.button>
+                                            )}
+                                        </div>
                                     </div>
-                                </div>
-                            </motion.div>
+                                </motion.div>
 
-                            {/* Favorites Row */}
-                            {favorites.length > 0 && (
-                                <ChannelRow
-                                    title="Mes Favoris"
-                                    icon={Heart}
-                                    channels={favorites}
-                                    onChannelClick={handlePlayChannel}
-                                    favorites={favorites}
-                                    onToggleFavorite={toggleFavorite}
-                                />
-                            )}
+                                {/* Favorites Row */}
+                                {favorites.length > 0 && (
+                                    <ChannelRow
+                                        title="Mes Favoris"
+                                        icon={Heart}
+                                        channels={favorites}
+                                        onChannelClick={handlePlayChannel}
+                                        favorites={favorites}
+                                        onToggleFavorite={toggleFavorite}
+                                        onHover={setHoveredChannel}
+                                    />
+                                )}
 
-                            {/* Recently Watched */}
-                            {recentlyWatched.length > 0 && (
-                                <ChannelRow
-                                    title="Récemment regardées"
-                                    icon={Clock}
-                                    channels={recentlyWatched}
-                                    onChannelClick={handlePlayChannel}
-                                    favorites={favorites}
-                                    onToggleFavorite={toggleFavorite}
-                                />
-                            )}
+                                {/* Recently Watched */}
+                                {recentlyWatched.length > 0 && (
+                                    <ChannelRow
+                                        title="Récemment regardées"
+                                        icon={Clock}
+                                        channels={recentlyWatched}
+                                        onChannelClick={handlePlayChannel}
+                                        favorites={favorites}
+                                        onToggleFavorite={toggleFavorite}
+                                        onHover={setHoveredChannel}
+                                    />
+                                )}
 
-                            {/* Featured Row */}
-                            {featuredChannels.length > 0 && (
-                                <ChannelRow
-                                    title="En Direct"
-                                    icon={TrendingUp}
-                                    channels={featuredChannels}
-                                    onChannelClick={handlePlayChannel}
-                                    favorites={favorites}
-                                    onToggleFavorite={toggleFavorite}
-                                />
-                            )}
+                                {/* Featured Row */}
+                                {featuredChannels.length > 0 && (
+                                    <ChannelRow
+                                        title="En Direct"
+                                        icon={TrendingUp}
+                                        channels={featuredChannels}
+                                        onChannelClick={handlePlayChannel}
+                                        favorites={favorites}
+                                        onToggleFavorite={toggleFavorite}
+                                        onHover={setHoveredChannel}
+                                    />
+                                )}
 
-                            {/* French Quick Access */}
-                            {frGroup && (
+                                {/* French Quick Access */}
+                                {frGroup && (
+                                    <div className="px-8">
+                                        <h3 className="text-xl font-bold mb-4 flex items-center gap-3">
+                                            <span className="w-1 h-6 bg-[var(--color-accent)] rounded-full" />
+                                            Catégories Françaises
+                                        </h3>
+                                        <div className="flex gap-3 flex-wrap">
+                                            {frGroup.categories.slice(0, 8).map(cat => (
+                                                <button
+                                                    key={cat.id}
+                                                    onClick={() => { setSelectedCountry(frGroup); setSelectedCategory(cat); }}
+                                                    className="px-5 py-3 glass-card hover:bg-white/10 hover:scale-105 transition-all text-sm font-medium cursor-pointer"
+                                                >
+                                                    {cat.displayName}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Browse by Country Pills */}
                                 <div className="px-8">
                                     <h3 className="text-xl font-bold mb-4 flex items-center gap-3">
-                                        <span className="w-1 h-6 bg-[var(--color-accent)] rounded-full" />
-                                        Catégories Françaises
+                                        <span className="w-1 h-6 bg-[var(--color-accent-secondary)] rounded-full" />
+                                        Parcourir par Pays
                                     </h3>
                                     <div className="flex gap-3 flex-wrap">
-                                        {frGroup.categories.slice(0, 8).map(cat => (
+                                        {countryGroups.slice(0, 12).map(country => (
                                             <button
-                                                key={cat.id}
-                                                onClick={() => { setSelectedCountry(frGroup); setSelectedCategory(cat); }}
-                                                className="px-5 py-3 glass-card hover:bg-white/10 hover:scale-105 transition-all text-sm font-medium cursor-pointer"
+                                                key={country.code}
+                                                onClick={() => { setSelectedCountry(country); setSelectedCategory(null); }}
+                                                className="px-4 py-2 glass-card hover:bg-white/10 hover:scale-105 transition-all text-sm font-medium flex items-center gap-2 cursor-pointer"
                                             >
-                                                {cat.displayName}
+                                                <Globe className="w-4 h-4 text-[var(--color-text-muted)]" />
+                                                {country.code}
+                                                <span className="text-[var(--color-text-muted)]">({country.categories.length})</span>
                                             </button>
                                         ))}
                                     </div>
                                 </div>
-                            )}
+                            </div>
+                        )}
 
-                            {/* Browse by Country Pills */}
+                        {/* Search Results */}
+                        {searchQuery && (
                             <div className="px-8">
-                                <h3 className="text-xl font-bold mb-4 flex items-center gap-3">
-                                    <span className="w-1 h-6 bg-[var(--color-accent-secondary)] rounded-full" />
-                                    Parcourir par Pays
-                                </h3>
-                                <div className="flex gap-3 flex-wrap">
-                                    {countryGroups.slice(0, 12).map(country => (
-                                        <button
-                                            key={country.code}
-                                            onClick={() => { setSelectedCountry(country); setSelectedCategory(null); }}
-                                            className="px-4 py-2 glass-card hover:bg-white/10 hover:scale-105 transition-all text-sm font-medium flex items-center gap-2 cursor-pointer"
-                                        >
-                                            <Globe className="w-4 h-4 text-[var(--color-text-muted)]" />
-                                            {country.code}
-                                            <span className="text-[var(--color-text-muted)]">({country.categories.length})</span>
-                                        </button>
+                                <ContentSection
+                                    title={`Résultats pour "${searchQuery}"`}
+                                    loading={loading}
+                                    channels={channels}
+                                    onChannelClick={handlePlayChannel}
+                                    favorites={favorites}
+                                    onToggleFavorite={toggleFavorite}
+                                    emptyMessage={`Aucune chaîne trouvée pour "${searchQuery}"`}
+                                />
+                            </div>
+                        )}
+
+
+
+                    // Categories Grid
+                        {selectedCountry && !selectedCategory && !searchQuery && (
+                            <div className="px-8 space-y-8">
+                                <h2 className="text-3xl font-bold flex items-center gap-4">
+                                    <span className="w-1 h-8 bg-[var(--color-accent)] rounded-full" />
+                                    {selectedCountry.code} - Catégories
+                                </h2>
+                                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                                    {selectedCountry.categories.map(cat => (
+                                        <CategoryCard key={cat.id} category={cat} onClick={() => setSelectedCategory(cat)} />
                                     ))}
                                 </div>
                             </div>
-                        </div>
-                    )}
+                        )}
 
-                    {/* Search Results */}
-                    {searchQuery && (
-                        <div className="px-8">
-                            <ContentSection
-                                title={`Résultats pour "${searchQuery}"`}
-                                loading={loading}
-                                channels={channels}
-                                onChannelClick={handlePlayChannel}
-                                favorites={favorites}
-                                onToggleFavorite={toggleFavorite}
-                                emptyMessage={`Aucune chaîne trouvée pour "${searchQuery}"`}
-                            />
-                        </div>
-                    )}
-
-                    {/* Categories Grid */}
-                    {selectedCountry && !selectedCategory && !searchQuery && (
-                        <div className="px-8 space-y-8">
-                            <h2 className="text-3xl font-bold flex items-center gap-4">
-                                <span className="w-1 h-8 bg-[var(--color-accent)] rounded-full" />
-                                {selectedCountry.code} - Catégories
-                            </h2>
-                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
-                                {selectedCountry.categories.map(cat => (
-                                    <CategoryCard key={cat.id} category={cat} onClick={() => setSelectedCategory(cat)} />
-                                ))}
+                        {/* Channels Grid */}
+                        {selectedCategory && !searchQuery && (
+                            <div className="px-8 space-y-6">
+                                <button
+                                    onClick={() => setSelectedCategory(null)}
+                                    className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)] hover:text-white transition-colors"
+                                >
+                                    <ChevronLeft className="w-4 h-4" />
+                                    Retour à {selectedCountry?.code}
+                                </button>
+                                <ContentSection
+                                    title={selectedCategory.displayName}
+                                    loading={loading}
+                                    channels={channels}
+                                    onChannelClick={handlePlayChannel}
+                                    favorites={favorites}
+                                    onToggleFavorite={toggleFavorite}
+                                    epgData={epgData} // Pass EPG data to ContentSection
+                                    onHover={setHoveredChannel}
+                                />
                             </div>
-                        </div>
-                    )}
+                        )}
+                        {/* Player Overlay */}
+                        <AnimatePresence>
+                            {selectedChannel && (
+                                <motion.div
+                                    initial={{ opacity: 0 }}
+                                    animate={{ opacity: 1 }}
+                                    exit={{ opacity: 0 }}
+                                    className="fixed inset-0 z-50 bg-black"
+                                >
+                                    <ErrorBoundary onClose={() => setSelectedChannel(null)}>
+                                        <Player
+                                            channel={selectedChannel}
+                                            program={epgData?.[selectedChannel.id]}
+                                            onClose={() => setSelectedChannel(null)}
+                                            onPrevChannel={goToPrevChannel}
+                                            onNextChannel={goToNextChannel}
+                                            hasPrev={hasPrevChannel}
+                                            hasNext={hasNextChannel}
+                                        />
+                                    </ErrorBoundary>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
 
-                    {/* Channels Grid */}
-                    {selectedCategory && !searchQuery && (
-                        <div className="px-8 space-y-6">
-                            <button
-                                onClick={() => setSelectedCategory(null)}
-                                className="flex items-center gap-2 text-sm text-[var(--color-text-secondary)] hover:text-white transition-colors"
-                            >
-                                <ChevronLeft className="w-4 h-4" />
-                                Retour à {selectedCountry?.code}
-                            </button>
-                            <ContentSection
-                                title={selectedCategory.displayName}
-                                loading={loading}
-                                channels={channels}
-                                onChannelClick={handlePlayChannel}
-                                favorites={favorites}
-                                onToggleFavorite={toggleFavorite}
-                            />
-                        </div>
-                    )}
+                        {/* EPG Panel */}
+                        <AnimatePresence>
+                            {epgChannel && (
+                                <EpgPanel
+                                    channel={epgChannel}
+                                    onClose={() => setEpgChannel(null)}
+                                    onPlayChannel={(ch) => setSelectedChannel(ch)}
+                                />
+                            )}
+                        </AnimatePresence>
+                    </div>
                 </div>
             </div>
-
-            {/* Player Overlay */}
-            <AnimatePresence>
-                {selectedChannel && (
-                    <motion.div
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                        exit={{ opacity: 0 }}
-                        className="fixed inset-0 z-50 bg-black"
-                    >
-                        <ErrorBoundary onClose={() => setSelectedChannel(null)}>
-                            <Player
-                                channel={selectedChannel}
-                                onClose={() => setSelectedChannel(null)}
-                                onPrevChannel={goToPrevChannel}
-                                onNextChannel={goToNextChannel}
-                                hasPrev={hasPrevChannel}
-                                hasNext={hasNextChannel}
-                            />
-                        </ErrorBoundary>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-
-            {/* EPG Panel */}
-            <AnimatePresence>
-                {epgChannel && (
-                    <EpgPanel
-                        channel={epgChannel}
-                        onClose={() => setEpgChannel(null)}
-                        onPlayChannel={(ch) => setSelectedChannel(ch)}
-                    />
-                )}
-            </AnimatePresence>
         </div>
     );
 };
 
 // Netflix-style horizontal row
-const ChannelRow = ({ title, icon: Icon, channels, onChannelClick, favorites, onToggleFavorite }) => {
+const ChannelRow = ({ title, icon: Icon, channels, onChannelClick, favorites, onToggleFavorite, onHover }) => {
     const scrollRef = useRef(null);
     const [canScrollLeft, setCanScrollLeft] = useState(false);
     const [canScrollRight, setCanScrollRight] = useState(true);
@@ -693,6 +756,7 @@ const ChannelRow = ({ title, icon: Icon, channels, onChannelClick, favorites, on
                             onClick={() => onChannelClick(ch)}
                             isFavorite={favorites?.some(f => f.id === ch.id)}
                             onToggleFavorite={onToggleFavorite}
+                            onHover={onHover}
                         />
                     ))}
                 </div>
@@ -702,11 +766,13 @@ const ChannelRow = ({ title, icon: Icon, channels, onChannelClick, favorites, on
 };
 
 // Larger channel card for featured rows
-const ChannelCardLarge = ({ channel, onClick, isFavorite, onToggleFavorite }) => (
+const ChannelCardLarge = ({ channel, onClick, isFavorite, onToggleFavorite, onHover }) => (
     <motion.div
         whileHover={{ scale: 1.05, zIndex: 10 }}
         className="relative flex-shrink-0 w-[280px] aspect-video rounded-xl overflow-hidden cursor-pointer group glass-card"
         onClick={onClick}
+        onMouseEnter={() => onHover?.(channel)}
+        onMouseLeave={() => onHover?.(null)}
     >
         {channel.logo ? (
             <img src={channel.logo} alt={channel.name} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" loading="lazy" />
@@ -786,7 +852,7 @@ const CategoryCard = ({ category, onClick }) => (
     </motion.div>
 );
 
-const ContentSection = ({ title, loading, channels, onChannelClick, favorites, onToggleFavorite, emptyMessage }) => (
+const ContentSection = ({ title, loading, channels, onChannelClick, favorites, onToggleFavorite, emptyMessage, epgData, onHover }) => (
     <div className="space-y-6">
         <h2 className="text-3xl font-bold">{title}</h2>
         {loading ? (
@@ -797,9 +863,11 @@ const ContentSection = ({ title, loading, channels, onChannelClick, favorites, o
                     <ChannelCard
                         key={ch.id}
                         channel={ch}
+                        program={epgData?.[ch.id]}
                         onClick={() => onChannelClick(ch)}
                         isFavorite={favorites?.some(f => f.id === ch.id)}
                         onToggleFavorite={onToggleFavorite}
+                        onHover={onHover}
                     />
                 ))}
             </div>
@@ -813,7 +881,7 @@ const ContentSection = ({ title, loading, channels, onChannelClick, favorites, o
     </div>
 );
 
-const ChannelCard = ({ channel, onClick, isFavorite, onToggleFavorite }) => {
+const ChannelCard = ({ channel, program, onClick, isFavorite, onToggleFavorite, onHover }) => {
     // Detect quality from channel name
     const getQuality = (name) => {
         if (!name) return null;
@@ -825,11 +893,21 @@ const ChannelCard = ({ channel, onClick, isFavorite, onToggleFavorite }) => {
     };
     const quality = getQuality(channel.name);
 
+    // Calculate progress
+    const progress = useMemo(() => {
+        if (!program) return 0;
+        const now = Math.floor(Date.now() / 1000);
+        const p = ((now - program.start) / (program.end - program.start)) * 100;
+        return Math.min(Math.max(p, 0), 100);
+    }, [program]);
+
     return (
         <motion.div
             whileHover={{ scale: 1.05, y: -8 }}
             className="relative aspect-video rounded-xl overflow-hidden cursor-pointer group glass-card"
             onClick={onClick}
+            onMouseEnter={() => onHover?.(channel)}
+            onMouseLeave={() => onHover?.(null)}
         >
             {channel.logo ? (
                 <img src={channel.logo} alt={channel.name} className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" loading="lazy" />
@@ -852,12 +930,25 @@ const ChannelCard = ({ channel, onClick, isFavorite, onToggleFavorite }) => {
                 <Heart className={`w-3.5 h-3.5 ${isFavorite ? 'fill-red-500 text-red-500' : 'text-white'}`} />
             </button>
 
-            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-4">
-                <h4 className="text-sm font-bold text-white truncate">{channel.name}</h4>
-                <div className="flex items-center gap-2 mt-2">
-                    <span className="badge-live">LIVE</span>
-                    {quality && <QualityBadge quality={quality} />}
-                </div>
+            <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+                <h4 className="text-sm font-bold text-white truncate mb-1">{channel.name}</h4>
+
+                {program ? (
+                    <div className="space-y-1.5">
+                        <p className="text-xs text-[var(--color-text-secondary)] truncate">{program.title}</p>
+                        <div className="w-full h-1 bg-white/20 rounded-full overflow-hidden">
+                            <div
+                                className="h-full bg-[var(--color-accent)] rounded-full"
+                                style={{ width: `${progress}%` }}
+                            />
+                        </div>
+                    </div>
+                ) : (
+                    <div className="flex items-center gap-2">
+                        <span className="badge-live">LIVE</span>
+                        {quality && <QualityBadge quality={quality} />}
+                    </div>
+                )}
             </div>
         </motion.div>
     );

@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
-import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar } from 'lucide-react';
+import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar, List, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { parseError } from '../utils/errors';
 
-const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
+const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
     const videoRef = useRef(null);
     const hlsRef = useRef(null);
     const containerRef = useRef(null);
@@ -18,7 +18,8 @@ const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNe
     const [isPiP, setIsPiP] = useState(false);
     const [volume, setVolume] = useState(1); // 0 to 1
     const [viewingTime, setViewingTime] = useState(0); // Time in seconds
-    const [currentProgram, setCurrentProgram] = useState(null); // EPG current program
+    const [currentProgram, setCurrentProgram] = useState(program || null); // EPG current program
+    const [showInfo, setShowInfo] = useState(false);
     const hideControlsTimer = useRef(null);
     const viewingInterval = useRef(null);
 
@@ -72,23 +73,28 @@ const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNe
     }, [isPlaying, error]);
 
     // Fetch EPG for current channel
+    // Update current program from prop or fetch if missing
     useEffect(() => {
-        const fetchEpg = async () => {
-            if (!channel?.id) return;
-            try {
-                const res = await window.api.getShortEpg(channel.id);
-                if (res.success && res.epg) {
-                    const programs = Array.isArray(res.epg) ? res.epg : res.epg.data || [];
-                    const now = Date.now() / 1000;
-                    const current = programs.find(p => now >= p.start_timestamp && now <= p.stop_timestamp);
-                    setCurrentProgram(current || null);
+        if (program) {
+            setCurrentProgram(program);
+        } else {
+            const fetchEpg = async () => {
+                if (!channel?.id) return;
+                try {
+                    const res = await window.api.getShortEpg(channel.id);
+                    if (res.success && res.epg) {
+                        const programs = Array.isArray(res.epg) ? res.epg : res.epg.data || [];
+                        const now = Date.now() / 1000;
+                        const current = programs.find(p => now >= p.start_timestamp && now <= p.stop_timestamp);
+                        setCurrentProgram(current || null);
+                    }
+                } catch (e) {
+                    console.log('EPG fetch failed:', e);
                 }
-            } catch (e) {
-                console.log('EPG fetch failed:', e);
-            }
-        };
-        fetchEpg();
-    }, [channel?.id]);
+            };
+            fetchEpg();
+        }
+    }, [channel?.id, program]);
 
     useEffect(() => {
         startStream();
@@ -305,6 +311,51 @@ const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNe
                             </div>
                         </div>
 
+                        {/* EPG Overlay (Info Panel) */}
+                        <AnimatePresence>
+                            {showInfo && showControls && currentProgram && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: 20 }}
+                                    className="absolute bottom-28 left-6 md:left-12 right-6 md:right-12 z-40"
+                                >
+                                    <div className="bg-black/80 backdrop-blur-xl p-6 rounded-2xl border border-white/10 max-w-2xl mx-auto shadow-2xl">
+                                        <div className="flex items-start justify-between gap-4 mb-3">
+                                            <div>
+                                                <h3 className="text-xl font-bold text-white mb-1">{currentProgram.title}</h3>
+                                                <div className="flex items-center gap-3 text-sm text-[var(--color-text-secondary)]">
+                                                    <span className="bg-white/10 px-2 py-0.5 rounded text-xs text-white">LIVE</span>
+                                                    <span>
+                                                        {new Date(currentProgram.start * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        {' - '}
+                                                        {new Date(currentProgram.end * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Progress */}
+                                        <div className="relative h-1.5 bg-white/20 rounded-full overflow-hidden mb-3">
+                                            <div
+                                                className="absolute top-0 left-0 h-full bg-[var(--color-accent)]"
+                                                style={{
+                                                    width: `${Math.min(((Date.now() / 1000 - currentProgram.start) / (currentProgram.end - currentProgram.start)) * 100, 100)}%`
+                                                }}
+                                            />
+                                        </div>
+
+                                        {currentProgram.descr && (
+                                            <p className="text-sm text-[var(--color-text-muted)] line-clamp-3">
+                                                {currentProgram.descr}
+                                            </p>
+                                        )}
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+
+
                         {/* Center Controls - Prev/Play/Next */}
                         <div className="absolute inset-0 flex items-center justify-center pointer-events-auto">
                             <div className="flex items-center gap-6">
@@ -388,6 +439,9 @@ const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNe
                                 <div className="flex items-center gap-2">
                                     <button onClick={togglePiP} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer" title="Picture-in-Picture">
                                         <PictureInPicture2 className={`w-5 h-5 ${isPiP ? 'text-[var(--color-accent)]' : ''}`} />
+                                    </button>
+                                    <button onClick={() => setShowInfo(!showInfo)} className={`p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer ${showInfo ? 'text-[var(--color-accent)] bg-white/10' : ''}`} title="Informations programme">
+                                        <Info className="w-5 h-5" />
                                     </button>
                                     <button onClick={toggleFullscreen} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer">
                                         {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
