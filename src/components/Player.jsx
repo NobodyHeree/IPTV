@@ -1,0 +1,405 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Hls from 'hls.js';
+import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { parseError } from '../utils/errors';
+
+const Player = ({ channel, onClose, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
+    const videoRef = useRef(null);
+    const hlsRef = useRef(null);
+    const containerRef = useRef(null);
+    const [streamUrl, setStreamUrl] = useState(null);
+    const [error, setError] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const [showControls, setShowControls] = useState(true);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [isMuted, setIsMuted] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [isPiP, setIsPiP] = useState(false);
+    const [volume, setVolume] = useState(1); // 0 to 1
+    const [viewingTime, setViewingTime] = useState(0); // Time in seconds
+    const [currentProgram, setCurrentProgram] = useState(null); // EPG current program
+    const hideControlsTimer = useRef(null);
+    const viewingInterval = useRef(null);
+
+    // Format seconds to MM:SS or HH:MM:SS
+    const formatTime = (seconds) => {
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        if (hrs > 0) {
+            return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const startStream = useCallback(async () => {
+        try {
+            setLoading(true);
+            setError(null);
+            setViewingTime(0); // Reset viewing time on new stream
+            const cmd = channel.cmd || `ffrt http://localhost/${channel.id}`;
+            const res = await window.api.getStreamUrl(cmd);
+
+            if (res.success && res.streamUrl) {
+                setStreamUrl(res.streamUrl);
+            } else {
+                throw new Error(res.error || 'Failed to get stream URL');
+            }
+        } catch (err) {
+            const friendlyError = parseError(err);
+            setError(friendlyError);
+            setLoading(false);
+        }
+    }, [channel]);
+
+    // Viewing time counter
+    useEffect(() => {
+        if (isPlaying && !error) {
+            viewingInterval.current = setInterval(() => {
+                setViewingTime(prev => prev + 1);
+            }, 1000);
+        } else {
+            if (viewingInterval.current) {
+                clearInterval(viewingInterval.current);
+            }
+        }
+        return () => {
+            if (viewingInterval.current) {
+                clearInterval(viewingInterval.current);
+            }
+        };
+    }, [isPlaying, error]);
+
+    // Fetch EPG for current channel
+    useEffect(() => {
+        const fetchEpg = async () => {
+            if (!channel?.id) return;
+            try {
+                const res = await window.api.getShortEpg(channel.id);
+                if (res.success && res.epg) {
+                    const programs = Array.isArray(res.epg) ? res.epg : res.epg.data || [];
+                    const now = Date.now() / 1000;
+                    const current = programs.find(p => now >= p.start_timestamp && now <= p.stop_timestamp);
+                    setCurrentProgram(current || null);
+                }
+            } catch (e) {
+                console.log('EPG fetch failed:', e);
+            }
+        };
+        fetchEpg();
+    }, [channel?.id]);
+
+    useEffect(() => {
+        startStream();
+        return () => {
+            if (hlsRef.current) {
+                hlsRef.current.destroy();
+                hlsRef.current = null;
+            }
+        };
+    }, [channel, startStream]);
+
+    useEffect(() => {
+        if (!streamUrl || !videoRef.current) return;
+
+        if (Hls.isSupported()) {
+            if (hlsRef.current) hlsRef.current.destroy();
+
+            const hls = new Hls({
+                enableWorker: true,
+                lowLatencyMode: false,
+                backBufferLength: 90,
+                maxBufferLength: 30,
+                maxMaxBufferLength: 60,
+                fragLoadingMaxRetry: 3,
+                manifestLoadingMaxRetry: 3,
+            });
+
+            hlsRef.current = hls;
+            hls.attachMedia(videoRef.current);
+
+            hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+                hls.loadSource(streamUrl);
+            });
+
+            hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                videoRef.current.play().catch(() => { });
+                setIsPlaying(true);
+                setLoading(false);
+            });
+
+            hls.on(Hls.Events.ERROR, (event, data) => {
+                if (data.fatal) {
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                        hls.startLoad();
+                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                        hls.recoverMediaError();
+                    } else {
+                        hls.destroy();
+                        startStream();
+                    }
+                }
+            });
+
+            hls.on(Hls.Events.FRAG_LOADED, () => setLoading(false));
+
+        } else if (videoRef.current.canPlayType('application/vnd.apple.mpegurl')) {
+            videoRef.current.src = streamUrl;
+            videoRef.current.play();
+            setLoading(false);
+        }
+    }, [streamUrl, startStream]);
+
+    // Controls visibility
+    const resetControlsTimer = useCallback(() => {
+        setShowControls(true);
+        if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
+        hideControlsTimer.current = setTimeout(() => setShowControls(false), 3000);
+    }, []);
+
+    useEffect(() => {
+        resetControlsTimer();
+        return () => {
+            if (hideControlsTimer.current) clearTimeout(hideControlsTimer.current);
+        };
+    }, [resetControlsTimer]);
+
+    const togglePlay = () => {
+        if (videoRef.current) {
+            if (isPlaying) {
+                videoRef.current.pause();
+            } else {
+                videoRef.current.play();
+            }
+            setIsPlaying(!isPlaying);
+        }
+    };
+
+    const toggleMute = () => {
+        if (videoRef.current) {
+            videoRef.current.muted = !isMuted;
+            setIsMuted(!isMuted);
+        }
+    };
+
+    const handleVolumeChange = (e) => {
+        const newVolume = parseFloat(e.target.value);
+        setVolume(newVolume);
+        if (videoRef.current) {
+            videoRef.current.volume = newVolume;
+            setIsMuted(newVolume === 0);
+        }
+    };
+
+    const toggleFullscreen = () => {
+        if (!containerRef.current) return;
+        if (!document.fullscreenElement) {
+            containerRef.current.requestFullscreen();
+            setIsFullscreen(true);
+        } else {
+            document.exitFullscreen();
+            setIsFullscreen(false);
+        }
+    };
+
+    const togglePiP = async () => {
+        if (!videoRef.current) return;
+        try {
+            if (document.pictureInPictureElement) {
+                await document.exitPictureInPicture();
+                setIsPiP(false);
+            } else if (document.pictureInPictureEnabled) {
+                await videoRef.current.requestPictureInPicture();
+                setIsPiP(true);
+            }
+        } catch (e) {
+            console.error('PiP error:', e);
+        }
+    };
+
+    return (
+        <div
+            ref={containerRef}
+            className="relative w-full h-full bg-black flex flex-col"
+            onMouseMove={resetControlsTimer}
+            onClick={resetControlsTimer}
+        >
+            {/* Video */}
+            <video
+                ref={videoRef}
+                className="absolute inset-0 w-full h-full object-contain"
+                autoPlay
+                playsInline
+            />
+
+            {/* Loading Overlay */}
+            <AnimatePresence>
+                {loading && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 flex items-center justify-center bg-black/60 z-20"
+                    >
+                        <div className="flex flex-col items-center gap-4">
+                            <Loader2 className="w-12 h-12 text-[var(--color-accent)] animate-spin" />
+                            <span className="text-sm text-[var(--color-text-secondary)]">Chargement du stream...</span>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Error Overlay */}
+            {error && (
+                <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/90">
+                    <div className="text-center p-8 max-w-md">
+                        <div className="w-16 h-16 mx-auto mb-6 rounded-full bg-red-500/20 flex items-center justify-center">
+                            <AlertTriangle className="w-8 h-8 text-red-400" />
+                        </div>
+                        <h3 className="text-2xl font-bold text-white mb-2">{error.title}</h3>
+                        <p className="text-[var(--color-text-secondary)] mb-8">{error.message}</p>
+                        <div className="flex gap-4 justify-center">
+                            <button onClick={startStream} className="btn-primary flex items-center gap-2 cursor-pointer">
+                                <RefreshCw className="w-4 h-4" /> Réessayer
+                            </button>
+                            <button onClick={onClose} className="px-6 py-3 glass-card hover:bg-white/10 transition-all cursor-pointer">
+                                Fermer
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Controls Overlay */}
+            <AnimatePresence>
+                {showControls && !error && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="absolute inset-0 z-30"
+                    >
+                        {/* Top Bar */}
+                        <div className="absolute top-0 left-0 right-0 p-6 bg-gradient-to-b from-black/80 to-transparent pointer-events-auto">
+                            <div className="flex justify-between items-start">
+                                <div>
+                                    <h2 className="text-2xl font-bold text-white drop-shadow-lg">{channel.name}</h2>
+                                    <div className="flex items-center gap-3 mt-2">
+                                        <span className="badge-live">LIVE</span>
+                                        <span className="text-sm text-[var(--color-text-secondary)]">{formatTime(viewingTime)}</span>
+                                    </div>
+                                    {currentProgram && (
+                                        <div className="flex items-center gap-2 mt-3 text-[var(--color-text-secondary)]">
+                                            <Calendar className="w-4 h-4" />
+                                            <span className="text-sm">{currentProgram.name || 'Programme en cours'}</span>
+                                        </div>
+                                    )}
+                                </div>
+                                <button
+                                    onClick={(e) => { e.stopPropagation(); onClose(); }}
+                                    className="p-3 rounded-full glass-card hover:bg-white/20 transition-colors cursor-pointer z-50"
+                                >
+                                    <X className="w-6 h-6" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Center Controls - Prev/Play/Next */}
+                        <div className="absolute inset-0 flex items-center justify-center pointer-events-auto">
+                            <div className="flex items-center gap-6">
+                                {/* Previous Channel */}
+                                <motion.button
+                                    whileHover={{ scale: 1.1 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={(e) => { e.stopPropagation(); hasPrev && onPrevChannel?.(); }}
+                                    className={`p-4 rounded-full glass-card cursor-pointer transition-opacity ${hasPrev ? 'opacity-100' : 'opacity-30 cursor-not-allowed'}`}
+                                    disabled={!hasPrev}
+                                    title="Chaîne précédente"
+                                >
+                                    <SkipBack className="w-6 h-6" />
+                                </motion.button>
+
+                                {/* Play/Pause */}
+                                <motion.button
+                                    whileHover={{ scale: 1.1 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={togglePlay}
+                                    className="p-6 rounded-full glass-card glow cursor-pointer"
+                                >
+                                    {isPlaying ? <Pause className="w-10 h-10" /> : <Play className="w-10 h-10 ml-1" />}
+                                </motion.button>
+
+                                {/* Next Channel */}
+                                <motion.button
+                                    whileHover={{ scale: 1.1 }}
+                                    whileTap={{ scale: 0.95 }}
+                                    onClick={(e) => { e.stopPropagation(); hasNext && onNextChannel?.(); }}
+                                    className={`p-4 rounded-full glass-card cursor-pointer transition-opacity ${hasNext ? 'opacity-100' : 'opacity-30 cursor-not-allowed'}`}
+                                    disabled={!hasNext}
+                                    title="Chaîne suivante"
+                                >
+                                    <SkipForward className="w-6 h-6" />
+                                </motion.button>
+                            </div>
+                        </div>
+
+                        {/* Bottom Bar */}
+                        <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/80 to-transparent pointer-events-auto">
+                            {/* Time Bar */}
+                            <div className="mb-4 flex items-center gap-4">
+                                <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
+                                    <div
+                                        className="h-full bg-[var(--color-accent)] rounded-full transition-all"
+                                        style={{ width: `${Math.min((viewingTime / 3600) * 100, 100)}%` }}
+                                    />
+                                </div>
+                                <span className="text-sm text-[var(--color-text-secondary)] font-mono min-w-[60px] text-right">
+                                    {formatTime(viewingTime)}
+                                </span>
+                            </div>
+
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-4">
+                                    <button onClick={togglePlay} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer">
+                                        {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
+                                    </button>
+                                    <div className="flex items-center gap-2 group">
+                                        <button onClick={toggleMute} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer">
+                                            {isMuted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
+                                        </button>
+                                        <input
+                                            type="range"
+                                            min="0"
+                                            max="1"
+                                            step="0.05"
+                                            value={isMuted ? 0 : volume}
+                                            onChange={handleVolumeChange}
+                                            className="w-20 h-1 bg-white/30 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)] hover:bg-white/40 transition-all"
+                                            style={{
+                                                background: `linear-gradient(to right, var(--color-accent) ${(isMuted ? 0 : volume) * 100}%, rgba(255,255,255,0.3) ${(isMuted ? 0 : volume) * 100}%)`
+                                            }}
+                                        />
+                                    </div>
+                                    <button onClick={startStream} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer" title="Actualiser">
+                                        <RefreshCw className="w-5 h-5" />
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={togglePiP} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer" title="Picture-in-Picture">
+                                        <PictureInPicture2 className={`w-5 h-5 ${isPiP ? 'text-[var(--color-accent)]' : ''}`} />
+                                    </button>
+                                    <button onClick={toggleFullscreen} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer">
+                                        {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+};
+
+export default Player;
