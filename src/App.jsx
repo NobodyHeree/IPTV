@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import Dashboard from './components/Dashboard';
 import ProfileSelect from './components/ProfileSelect';
 import ErrorBoundary from './components/ErrorBoundary';
+
 import { ToastProvider } from './components/Toast';
+import { SettingsProvider } from './contexts/SettingsContext';
 
 function App() {
   const [activeProfile, setActiveProfile] = useState(null);
@@ -45,27 +47,29 @@ function App() {
   }
 
   return (
-    <ToastProvider>
-      <div className="min-h-screen bg-background text-white font-sans antialiased selection:bg-primary selection:text-white">
-        {!activeProfile ? (
-          // Profile Selection (first screen)
-          <ProfileSelect
-            profiles={profiles}
-            onSelectProfile={handleSelectProfile}
-            onProfilesChange={setProfiles}
-          />
-        ) : (
-          // Dashboard
-          <ErrorBoundary>
-            <Dashboard
-              profile={activeProfile}
-              onLogout={handleLogout}
-              onSwitchProfile={handleSwitchProfile}
+    <SettingsProvider>
+      <ToastProvider>
+        <div className="min-h-screen bg-background text-white font-sans antialiased selection:bg-primary selection:text-white">
+          {!activeProfile ? (
+            // Profile Selection (first screen)
+            <ProfileSelect
+              profiles={profiles}
+              onSelectProfile={handleSelectProfile}
+              onProfilesChange={setProfiles}
             />
-          </ErrorBoundary>
-        )}
-      </div>
-    </ToastProvider>
+          ) : (
+            // Dashboard
+            <ErrorBoundary>
+              <Dashboard
+                profile={activeProfile}
+                onLogout={handleLogout}
+                onSwitchProfile={handleSwitchProfile}
+              />
+            </ErrorBoundary>
+          )}
+        </div>
+      </ToastProvider>
+    </SettingsProvider>
   );
 }
 

@@ -32,5 +32,11 @@ contextBridge.exposeInMainWorld('api', {
 
     // EPG (Electronic Program Guide)
     getShortEpg: (channelId) => ipcRenderer.invoke('get-short-epg', channelId),
-    getAllEpg: (period) => ipcRenderer.invoke('get-all-epg', period)
+    getAllEpg: (period) => ipcRenderer.invoke('get-all-epg', period),
+
+    // Settings
+    getSettings: () => ipcRenderer.invoke('get-settings'),
+    saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+    restartApp: () => ipcRenderer.invoke('restart-app'),
+    clearCache: () => ipcRenderer.invoke('clear-cache')
 });

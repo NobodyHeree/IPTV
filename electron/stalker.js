@@ -20,6 +20,25 @@ class StalkerClient {
         this.baseUrl = null;
         this.token = null;
         this.method = 'GET'; // Default method
+        this.allChannelsCache = null; // Cache for client-side search
+        this.config = {
+            timeout: 15000,
+            userAgent: 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3'
+        };
+    }
+
+    // Update configuration dynamically
+    updateConfig(newConfig) {
+        this.config = { ...this.config, ...newConfig };
+
+        // Update axios defaults
+        if (newConfig.userAgent) {
+            this.client.defaults.headers['User-Agent'] = newConfig.userAgent;
+        }
+        if (newConfig.timeout) {
+            this.client.defaults.timeout = newConfig.timeout;
+        }
+        console.log('[Stalker] Configuration updated:', this.config);
     }
 
     // Set the HTTP method to use (GET or POST)
@@ -168,22 +187,66 @@ class StalkerClient {
     }
 
     async searchChannels(query) {
-        const params = new URLSearchParams({
-            type: 'itv',
-            action: 'get_ordered_list',
-            search: query,
-            genre: '0',
-            force_ch_link_check: '0',
-            fav: '0',
-            sortby: 'number',
-            hd: '1'
-        });
-        const res = await this.request(`${this.baseUrl}server/load.php`, params);
-        console.log(`[Stalker] Search for "${query}" returned ${res.data.js?.data?.length || 0} results`);
-        return res.data.js ? res.data.js.data : [];
+        // The server search is broken (returns random channels).
+        // We will try to fetch ALL channels and filter client-side.
+        // We'll cache the full list to avoid spamming the server.
+
+        if (!this.allChannelsCache) {
+            console.log('[Stalker] Fetching ALL channels for client-side search...');
+            try {
+                // Try get_all_channels first
+                const params = new URLSearchParams({
+                    type: 'itv',
+                    action: 'get_all_channels',
+                    force_ch_link_check: '0',
+                    fav: '0'
+                });
+                const res = await this.request(`${this.baseUrl}server/load.php`, params);
+                if (res.data && res.data.js && res.data.js.data) {
+                    this.allChannelsCache = res.data.js.data;
+                    console.log(`[Stalker] Cached ${this.allChannelsCache.length} channels.`);
+                } else {
+                    console.warn('[Stalker] get_all_channels failed or returned empty. Falling back to get_ordered_list.');
+                    // Fallback: try to get ordered list without genre (sometimes returns all)
+                    const fallbackParams = new URLSearchParams({
+                        type: 'itv',
+                        action: 'get_ordered_list',
+                        genre: '0',
+                        force_ch_link_check: '0',
+                        fav: '0',
+                        hd: '1'
+                    });
+                    const fallbackRes = await this.request(`${this.baseUrl}server/load.php`, fallbackParams);
+                    if (fallbackRes.data.js && fallbackRes.data.js.data) {
+                        this.allChannelsCache = fallbackRes.data.js.data;
+                        console.log(`[Stalker] Cached ${this.allChannelsCache.length} channels (fallback).`);
+                    }
+                }
+            } catch (e) {
+                console.error('[Stalker] Failed to fetch all channels:', e);
+            }
+        }
+
+        let results = this.allChannelsCache || [];
+        console.log(`[Stalker] Searching in ${results.length} cached channels for "${query}"`);
+
+        // Client-side filtering
+        if (query && results.length > 0) {
+            const lowerQuery = query.toLowerCase();
+            const filtered = results.filter(ch => {
+                const name = ch.name?.toLowerCase() || '';
+                const title = ch.title?.toLowerCase() || '';
+                const alias = ch.alias?.toLowerCase() || '';
+                return name.includes(lowerQuery) || title.includes(lowerQuery) || alias.includes(lowerQuery);
+            });
+            console.log(`[Stalker] Found ${filtered.length} matches locally.`);
+            return filtered;
+        }
+
+        return [];
     }
 
-    async getStream(cmd) {
+    async getStream(cmd, startTime = null) {
         const params = new URLSearchParams({
             type: 'itv',
             action: 'create_link',
@@ -194,6 +257,36 @@ class StalkerClient {
             download: '0',
             force_ch_link_check: '0'
         });
+
+        // If it's a replay request, we might need to adjust params or cmd
+        // For standard MAG/Stalker, we usually append ?utc=TIMESTAMP to the stream URL
+        // But create_link expects the original cmd. 
+        // Some portals interpret 'forced_storage' or specific flags for archive.
+        // Let's try to just get the link first, then append utc if it's not baked in.
+
+        // However, usually we need to tell the server we want archive.
+        // If startTime is present, sometimes we modify the cmd sent to the server.
+        // Example: "ffrt http://... " -> "ffrt http://... ...?utc=..."
+        // Let's try appending to the cmd if it contains a URL.
+
+        let modifiedCmd = cmd;
+        if (startTime) {
+            // Basic heuristic: find the http url in cmd and append utc
+            if (modifiedCmd.includes('http')) {
+                if (modifiedCmd.includes('?')) {
+                    modifiedCmd += `&utc=${startTime}`;
+                } else {
+                    // Check if it ends with whitespace
+                    const parts = modifiedCmd.split(' ');
+                    const urlIndex = parts.findIndex(p => p.startsWith('http'));
+                    if (urlIndex !== -1) {
+                        parts[urlIndex] += `?utc=${startTime}`;
+                        modifiedCmd = parts.join(' ');
+                    }
+                }
+                params.set('cmd', modifiedCmd);
+            }
+        }
 
         const res = await this.request(`${this.baseUrl}server/load.php`, params);
         console.log('[Stalker] create_link response:', res.data);
@@ -206,6 +299,14 @@ class StalkerClient {
             if (streamUrl.includes('extension=ts')) {
                 streamUrl = streamUrl.replace('extension=ts', 'extension=m3u8');
             }
+
+            // If we requested a start time, ensure the returned URL has it. 
+            // Sometimes the server ignores our cmd modification and returns a generic link.
+            // In that case, we force append it again for the proxy/player.
+            if (startTime && !streamUrl.includes('utc=')) {
+                streamUrl += (streamUrl.includes('?') ? '&' : '?') + `utc=${startTime}`;
+            }
+
             return streamUrl;
         }
         throw new Error('Could not generate stream link');

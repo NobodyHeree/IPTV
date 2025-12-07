@@ -3,6 +3,7 @@ import Hls from 'hls.js';
 import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar, List, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { parseError } from '../utils/errors';
+import { useSettings } from '../contexts/SettingsContext';
 
 const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
     const videoRef = useRef(null);
@@ -16,64 +17,16 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
     const [isMuted, setIsMuted] = useState(false);
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [isPiP, setIsPiP] = useState(false);
-    const [volume, setVolume] = useState(1); // 0 to 1
-    const [viewingTime, setViewingTime] = useState(0); // Time in seconds
-    const [currentProgram, setCurrentProgram] = useState(program || null); // EPG current program
+    const [duration, setDuration] = useState(0);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [isDragging, setIsDragging] = useState(false);
+    const [volume, setVolume] = useState(1);
+    const [currentProgram, setCurrentProgram] = useState(program || null);
     const [showInfo, setShowInfo] = useState(false);
     const hideControlsTimer = useRef(null);
-    const viewingInterval = useRef(null);
+    const { settings } = useSettings();
 
-    // Format seconds to MM:SS or HH:MM:SS
-    const formatTime = (seconds) => {
-        const hrs = Math.floor(seconds / 3600);
-        const mins = Math.floor((seconds % 3600) / 60);
-        const secs = seconds % 60;
-        if (hrs > 0) {
-            return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        }
-        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    };
-
-    const startStream = useCallback(async () => {
-        try {
-            setLoading(true);
-            setError(null);
-            setViewingTime(0); // Reset viewing time on new stream
-            const cmd = channel.cmd || `ffrt http://localhost/${channel.id}`;
-            const res = await window.api.getStreamUrl(cmd);
-
-            if (res.success && res.streamUrl) {
-                setStreamUrl(res.streamUrl);
-            } else {
-                throw new Error(res.error || 'Failed to get stream URL');
-            }
-        } catch (err) {
-            const friendlyError = parseError(err);
-            setError(friendlyError);
-            setLoading(false);
-        }
-    }, [channel]);
-
-    // Viewing time counter
-    useEffect(() => {
-        if (isPlaying && !error) {
-            viewingInterval.current = setInterval(() => {
-                setViewingTime(prev => prev + 1);
-            }, 1000);
-        } else {
-            if (viewingInterval.current) {
-                clearInterval(viewingInterval.current);
-            }
-        }
-        return () => {
-            if (viewingInterval.current) {
-                clearInterval(viewingInterval.current);
-            }
-        };
-    }, [isPlaying, error]);
-
-    // Fetch EPG for current channel
-    // Update current program from prop or fetch if missing
+    // Fetch EPG for current channel if needed
     useEffect(() => {
         if (program) {
             setCurrentProgram(program);
@@ -89,12 +42,63 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                         setCurrentProgram(current || null);
                     }
                 } catch (e) {
-                    console.log('EPG fetch failed:', e);
+                    console.error('EPG fetch failed:', e);
                 }
             };
             fetchEpg();
         }
     }, [channel?.id, program]);
+
+    // Format seconds to MM:SS or HH:MM:SS
+    const formatTime = (seconds) => {
+        if (!isFinite(seconds) || isNaN(seconds)) return '00:00';
+        const hrs = Math.floor(seconds / 3600);
+        const mins = Math.floor((seconds % 3600) / 60);
+        const secs = Math.floor(seconds % 60);
+        if (hrs > 0) {
+            return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+        return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    };
+
+    const startStream = useCallback(async () => {
+        try {
+            setLoading(true);
+            setError(null);
+            setCurrentTime(0);
+            setDuration(0);
+            const cmd = channel.cmd || `ffrt http://localhost/${channel.id}`;
+
+            // Determine if we should play a specific program (Replay)
+            let apiParams = cmd;
+            if (program) {
+                const now = Math.floor(Date.now() / 1000);
+                // If program ended in the past, or if we explicitly want to watch a specific program
+                // For now, let's say if it's not the CURRENT live program, we treat it as replay.
+                const isLive = now >= program.start_timestamp && now <= program.stop_timestamp;
+
+                if (!isLive) {
+                    console.log('Playing Replay for:', program.name, program.start_timestamp);
+                    apiParams = {
+                        cmd: cmd,
+                        startTime: program.start_timestamp
+                    };
+                }
+            }
+
+            const res = await window.api.getStreamUrl(apiParams);
+
+            if (res.success && res.streamUrl) {
+                setStreamUrl(res.streamUrl);
+            } else {
+                throw new Error(res.error || 'Failed to get stream URL');
+            }
+        } catch (err) {
+            const friendlyError = parseError(err);
+            setError(friendlyError);
+            setLoading(false);
+        }
+    }, [channel]);
 
     useEffect(() => {
         startStream();
@@ -106,6 +110,45 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
         };
     }, [channel, startStream]);
 
+    // Handle Time Updates
+    const handleTimeUpdate = () => {
+        if (videoRef.current && !isDragging) {
+            setCurrentTime(videoRef.current.currentTime);
+            const d = videoRef.current.duration;
+            if (d && !isNaN(d) && isFinite(d)) {
+                setDuration(d);
+            }
+        }
+    };
+
+    const handleLoadedMetadata = () => {
+        if (videoRef.current) {
+            const d = videoRef.current.duration;
+            if (d && !isNaN(d) && isFinite(d)) {
+                setDuration(d);
+            } else {
+                setDuration(Infinity); // Live stream
+            }
+        }
+    };
+
+    const handleSeek = (e) => {
+        const time = parseFloat(e.target.value);
+        setCurrentTime(time);
+        if (videoRef.current) {
+            videoRef.current.currentTime = time;
+        }
+    };
+
+    const handleSeekStart = () => setIsDragging(true);
+    const handleSeekEnd = (e) => {
+        setIsDragging(false);
+        const time = parseFloat(e.target.value);
+        if (videoRef.current) {
+            videoRef.current.currentTime = time;
+        }
+    };
+
     useEffect(() => {
         if (!streamUrl || !videoRef.current) return;
 
@@ -116,8 +159,8 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                 enableWorker: true,
                 lowLatencyMode: false,
                 backBufferLength: 90,
-                maxBufferLength: 30,
-                maxMaxBufferLength: 60,
+                maxBufferLength: settings?.player?.bufferSize || 30, // Use setting
+                maxMaxBufferLength: (settings?.player?.bufferSize || 30) * 2,
                 fragLoadingMaxRetry: 3,
                 manifestLoadingMaxRetry: 3,
             });
@@ -175,8 +218,10 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
         if (videoRef.current) {
             if (isPlaying) {
                 videoRef.current.pause();
+                resetControlsTimer(); // Keep controls visible when paused
             } else {
                 videoRef.current.play();
+                resetControlsTimer();
             }
             setIsPlaying(!isPlaying);
         }
@@ -224,6 +269,8 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
         }
     };
 
+    const isLive = duration === Infinity;
+
     return (
         <div
             ref={containerRef}
@@ -234,9 +281,13 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
             {/* Video */}
             <video
                 ref={videoRef}
-                className="absolute inset-0 w-full h-full object-contain"
+                className="absolute inset-0 w-full h-full"
+                style={{ objectFit: settings?.player?.aspectRatio === 'fill' ? 'fill' : 'contain' }}
                 autoPlay
                 playsInline
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onEnded={() => setIsPlaying(false)}
             />
 
             {/* Loading Overlay */}
@@ -292,8 +343,14 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                                 <div>
                                     <h2 className="text-2xl font-bold text-white drop-shadow-lg">{channel.name}</h2>
                                     <div className="flex items-center gap-3 mt-2">
-                                        <span className="badge-live">LIVE</span>
-                                        <span className="text-sm text-[var(--color-text-secondary)]">{formatTime(viewingTime)}</span>
+                                        {isLive ? (
+                                            <span className="badge-live">LIVE</span>
+                                        ) : (
+                                            <span className="px-2 py-0.5 rounded text-xs font-bold bg-blue-500 text-white">VOD</span>
+                                        )}
+                                        <span className="text-sm text-[var(--color-text-secondary)]">
+                                            {formatTime(currentTime)} / {isLive ? '--:--' : formatTime(duration)}
+                                        </span>
                                     </div>
                                     {currentProgram && (
                                         <div className="flex items-center gap-2 mt-3 text-[var(--color-text-secondary)]">
@@ -399,14 +456,33 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                         <div className="absolute bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black/80 to-transparent pointer-events-auto">
                             {/* Time Bar */}
                             <div className="mb-4 flex items-center gap-4">
-                                <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
-                                    <div
-                                        className="h-full bg-[var(--color-accent)] rounded-full transition-all"
-                                        style={{ width: `${Math.min((viewingTime / 3600) * 100, 100)}%` }}
+                                {isLive ? (
+                                    // Live Progress Bar (Stylized)
+                                    <div className="flex-1 h-1 bg-white/20 rounded-full overflow-hidden">
+                                        <div className="h-full bg-[var(--color-accent)] w-full relative overflow-hidden">
+                                            <div className="absolute inset-0 bg-white/30 animate-pulse" />
+                                        </div>
+                                    </div>
+                                ) : (
+                                    // Interactive Seek Bar for VOD
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max={duration || 100}
+                                        value={currentTime}
+                                        onChange={handleSeek}
+                                        onMouseDown={handleSeekStart}
+                                        onMouseUp={handleSeekEnd}
+                                        onTouchStart={handleSeekStart}
+                                        onTouchEnd={handleSeekEnd}
+                                        className="flex-1 h-1 bg-white/30 rounded-full appearance-none cursor-pointer accent-[var(--color-accent)] hover:h-1.5 transition-all"
+                                        style={{
+                                            background: `linear-gradient(to right, var(--color-accent) ${(currentTime / duration) * 100}%, rgba(255,255,255,0.3) ${(currentTime / duration) * 100}%)`
+                                        }}
                                     />
-                                </div>
+                                )}
                                 <span className="text-sm text-[var(--color-text-secondary)] font-mono min-w-[60px] text-right">
-                                    {formatTime(viewingTime)}
+                                    {isLive ? 'LIVE' : formatTime(duration - currentTime)}
                                 </span>
                             </div>
 

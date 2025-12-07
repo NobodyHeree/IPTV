@@ -12,6 +12,36 @@ const store = new Store();
 
 let mainWindow;
 
+// --- Default Settings ---
+const defaultSettings = {
+    general: {
+        language: 'fr',
+        theme: 'dark',
+        autoStart: false
+    },
+    player: {
+        bufferSize: 10, // seconds
+        userAgent: 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3',
+        aspectRatio: 'auto'
+    },
+    network: {
+        timeout: 15000,
+        proxy: ''
+    }
+};
+
+// Initialize settings if not exists
+if (!store.has('settings')) {
+    store.set('settings', defaultSettings);
+}
+
+// Apply initial settings to stalker
+const savedSettings = store.get('settings');
+stalker.updateConfig({
+    timeout: savedSettings.network.timeout,
+    userAgent: savedSettings.player.userAgent
+});
+
 // --- HLS PROXY (SFVIP-style) ---
 class HLSProxy {
     constructor() {
@@ -79,17 +109,34 @@ class HLSProxy {
         res.end('Not found');
     }
 
-    async handlePlaylist(cmd, res) {
-        console.log('[HLSProxy] Fetching playlist for:', cmd.substring(0, 40) + '...');
+    async handlePlaylist(rawCmd, res) {
+        let cmd = rawCmd;
+        let startTime = null;
+
+        try {
+            // Try to parse as JSON (new format)
+            if (rawCmd.startsWith('{')) {
+                const parsed = JSON.parse(rawCmd);
+                if (parsed && parsed.cmd) {
+                    cmd = parsed.cmd;
+                    startTime = parsed.startTime;
+                }
+            }
+        } catch (e) {
+            // Not JSON, ignore
+        }
+
+        console.log('[HLSProxy] Fetching playlist for:', cmd.substring(0, 40) + '...', startTime ? `(Time: ${startTime})` : '(Live)');
 
         try {
             // 1. Get fresh stream URL from Stalker
-            const streamUrl = await stalker.getStream(cmd);
+            const streamUrl = await stalker.getStream(cmd, startTime);
 
             // 2. Get auth info
             const auth = store.get('auth');
             const cookies = auth?.cookies || `mac=${encodeURIComponent(auth.mac)}; stboffset=0`;
-            const userAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3';
+            const settings = store.get('settings');
+            const userAgent = settings?.player?.userAgent || 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3';
 
             // 3. Resolve redirects to get final URL
             const finalUrl = await this.resolveRedirects(streamUrl, cookies, userAgent);
@@ -171,7 +218,8 @@ class HLSProxy {
         try {
             const auth = store.get('auth');
             const cookies = auth?.cookies || `mac=${encodeURIComponent(auth.mac)}; stboffset=0`;
-            const userAgent = 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3';
+            const settings = store.get('settings');
+            const userAgent = settings?.player?.userAgent || 'Mozilla/5.0 (QtEmbedded; U; Linux; C) AppleWebKit/533.3 (KHTML, like Gecko) MAG200 stbapp ver: 2 rev: 250 Safari/533.3';
 
             const response = await axios.get(url, {
                 headers: {
@@ -340,11 +388,31 @@ ipcMain.handle('get-all-epg', async (event, period = 24) => {
 ipcMain.handle('get-saved-auth', () => store.get('auth'));
 
 // Simple IPC to get the proxy URL for a channel
-ipcMain.handle('get-stream-url', async (event, cmd) => {
+ipcMain.handle('get-stream-url', async (event, params) => {
     try {
-        const encodedCmd = Buffer.from(cmd).toString('base64');
-        const proxyUrl = `http://127.0.0.1:${hlsProxy.port}/playlist/${encodedCmd}`;
-        console.log(`[Main] Stream URL: ${proxyUrl}`);
+        const cmd = typeof params === 'string' ? params : params.cmd;
+        const startTime = typeof params === 'object' ? params.startTime : null;
+
+        // Pass startTime to Stalker to generate time-shifted link
+        // Note: The proxy doesn't need to know about time-shift, it just forwards the URL 
+        // returned by stalker.getStream(), BUT we encode the cmd in the proxy URL.
+        // If stalker.getStream returns a URL with ?utc=..., that's fine.
+
+        // HOWEVER, our HLSProxy logic (lines 112-156) calls stalker.getStream(cmd).
+        // If we encoded the raw 'cmd' in the proxy URL, the proxy needs to know about startTime too 
+        // to pass it to stalker.getStream() when it resolves the playlist!
+
+        // SOLUTION: We should encode the startTime INTO the proxy URL path or query params.
+        // Or simpler: We modify the 'cmd' we pass to the proxy to INCLUDE the metadata.
+        // But 'cmd' is base64 encoded.
+        // Let's wrap the cmd and metadata in a JSON object, encode THAT, and pass it as the "cmd" to proxy.
+        // The proxy will decode it, see it's JSON, and use the params.
+
+        const payload = JSON.stringify({ cmd, startTime });
+        const encodedPayload = Buffer.from(payload).toString('base64');
+        const proxyUrl = `http://127.0.0.1:${hlsProxy.port}/playlist/${encodedPayload}`;
+
+        console.log(`[Main] Stream URL (Proxy): ${proxyUrl}`);
         return { success: true, streamUrl: proxyUrl };
     } catch (error) {
         return { success: false, error: error.message };
@@ -446,6 +514,58 @@ ipcMain.handle('delete-profile', (event, profileId) => {
         store.set('activeProfileId', profiles[0]?.id || null);
     }
     return { success: true };
+});
+
+// --- Settings Management ---
+ipcMain.handle('get-settings', () => {
+    return store.get('settings', defaultSettings);
+});
+
+ipcMain.handle('save-settings', (event, newSettings) => {
+    try {
+        store.set('settings', newSettings);
+
+        // Apply changes directly to backend services
+        if (newSettings.network?.timeout || newSettings.player?.userAgent) {
+            stalker.updateConfig({
+                timeout: newSettings.network.timeout,
+                userAgent: newSettings.player.userAgent
+            });
+        }
+
+        // Apply Auto-Start
+        if (typeof newSettings.general?.autoStart === 'boolean') {
+            app.setLoginItemSettings({
+                openAtLogin: newSettings.general.autoStart,
+                path: app.getPath('exe') // Optional, but good for certainty
+            });
+            console.log(`[Main] Auto-Start set to: ${newSettings.general.autoStart}`);
+        }
+
+        return { success: true };
+    } catch (error) {
+        console.error('[Main] Failed to save settings:', error);
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle('restart-app', () => {
+    app.relaunch();
+    app.exit(0);
+});
+
+ipcMain.handle('clear-cache', async () => {
+    try {
+        await mainWindow.webContents.session.clearCache();
+        await mainWindow.webContents.session.clearStorageData();
+        // Reset EPG or other specific stores if needed
+        // store.delete('epg'); // If we were caching EPG in store
+        console.log('[Main] Cache cleared');
+        return { success: true };
+    } catch (error) {
+        console.error('[Main] Failed to clear cache:', error);
+        return { success: false, error: error.message };
+    }
 });
 
 // --- Per-Profile Favorites ---
