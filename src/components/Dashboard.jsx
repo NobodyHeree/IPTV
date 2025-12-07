@@ -2,6 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft } from 'lucide-react';
 import Player from './Player';
+import MiniPlayer from './MiniPlayer';
+import SpotlightSearch from './SpotlightSearch';
 import ErrorBoundary from './ErrorBoundary';
 import EpgPanel from './EpgPanel';
 import AmbientBackground from './AmbientBackground';
@@ -31,6 +33,21 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
     const [epgChannel, setEpgChannel] = useState(null); // Channel for EPG panel
     const [epgData, setEpgData] = useState({});
     const [hoveredChannel, setHoveredChannel] = useState(null);
+    const [miniPlayerChannel, setMiniPlayerChannel] = useState(null); // For mini-player
+    const [isMiniPlayerMuted, setIsMiniPlayerMuted] = useState(false);
+    const [showSpotlight, setShowSpotlight] = useState(false); // Spotlight search
+
+    // Global keyboard shortcut for Spotlight (Ctrl+K or Cmd+K)
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+                e.preventDefault();
+                setShowSpotlight(prev => !prev);
+            }
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
 
     // Fetch EPG when channels are loaded
     useEffect(() => {
@@ -272,6 +289,35 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
             {/* Dynamic Ambiance */}
             <AmbientBackground imageUrl={hoveredChannel?.logo || (featuredChannels.length > 0 ? featuredChannels[0].logo : null)} />
 
+            {/* Spotlight Search Overlay */}
+            <AnimatePresence>
+                {showSpotlight && (
+                    <SpotlightSearch
+                        isOpen={showSpotlight}
+                        onClose={() => setShowSpotlight(false)}
+                        onSelectChannel={(ch) => {
+                            handlePlayChannel(ch);
+                            setShowSpotlight(false);
+                        }}
+                        onNavigate={(target) => {
+                            if (target === 'favorites') {
+                                setShowFavoritesView(true);
+                                setSelectedCountry(null);
+                                setSelectedCategory(null);
+                                setShowSettingsView(false);
+                            } else if (target === 'settings') {
+                                setShowSettingsView(true);
+                                setSelectedCountry(null);
+                                setSelectedCategory(null);
+                                setShowFavoritesView(false);
+                            }
+                        }}
+                        favorites={favorites}
+                        recentChannels={recentlyWatched}
+                    />
+                )}
+            </AnimatePresence>
+
             <div className="relative z-10 flex h-screen w-screen overflow-hidden bg-transparent">
                 {/* Sidebar */}
                 <Sidebar
@@ -405,6 +451,10 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
                                             channel={selectedChannel}
                                             program={epgData?.[selectedChannel.id]}
                                             onClose={() => setSelectedChannel(null)}
+                                            onMinimize={() => {
+                                                setMiniPlayerChannel(selectedChannel);
+                                                setSelectedChannel(null);
+                                            }}
                                             onPrevChannel={goToPrevChannel}
                                             onNextChannel={goToNextChannel}
                                             hasPrev={hasPrevChannel}
@@ -412,6 +462,23 @@ const Dashboard = ({ profile, onLogout, onSwitchProfile }) => {
                                         />
                                     </ErrorBoundary>
                                 </motion.div>
+                            )}
+                        </AnimatePresence>
+
+                        {/* Mini Player (floating) */}
+                        <AnimatePresence>
+                            {miniPlayerChannel && !selectedChannel && (
+                                <MiniPlayer
+                                    channel={miniPlayerChannel}
+                                    isPlaying={true}
+                                    isMuted={isMiniPlayerMuted}
+                                    onToggleMute={() => setIsMiniPlayerMuted(!isMiniPlayerMuted)}
+                                    onExpand={() => {
+                                        setSelectedChannel(miniPlayerChannel);
+                                        setMiniPlayerChannel(null);
+                                    }}
+                                    onClose={() => setMiniPlayerChannel(null)}
+                                />
                             )}
                         </AnimatePresence>
 

@@ -75,7 +75,16 @@ const errorMessages = {
 };
 
 /**
+ * @typedef {Object} ParsedError
+ * @property {string} title - User-friendly error title
+ * @property {string} message - Detailed error message
+ * @property {string} icon - Lucide icon name
+ */
+
+/**
  * Parse an error and return a user-friendly message
+ * @param {string|Error|{response?: {status: number}}} error - The error to parse
+ * @returns {ParsedError} Parsed error with user-friendly message
  */
 export function parseError(error) {
     // If error is a string, try to match it

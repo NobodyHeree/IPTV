@@ -1,41 +1,71 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 
-// Skeleton loader for channel cards
+// Skeleton loader for channel cards with shimmer effect
 export const ChannelCardSkeleton = () => (
-    <div className="aspect-video rounded-xl overflow-hidden glass-card animate-pulse">
-        <div className="w-full h-full bg-gradient-to-br from-white/5 to-white/10" />
-        <div className="absolute bottom-0 left-0 right-0 p-4">
-            <div className="h-4 bg-white/10 rounded w-3/4 mb-2" />
-            <div className="h-3 bg-white/10 rounded w-1/2" />
+    <div className="aspect-video rounded-xl overflow-hidden glass-card relative">
+        <div className="w-full h-full bg-gradient-to-br from-white/5 to-white/10">
+            {/* Shimmer overlay */}
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent shimmer" />
+        </div>
+        <div className="absolute bottom-0 left-0 right-0 p-4 space-y-2">
+            <div className="h-4 bg-white/10 rounded w-3/4" />
+            <div className="h-3 bg-white/5 rounded w-1/2" />
         </div>
     </div>
 );
 
 // Skeleton loader for large featured cards
 export const ChannelCardLargeSkeleton = () => (
-    <div className="flex-shrink-0 w-[280px] aspect-video rounded-xl overflow-hidden glass-card animate-pulse">
-        <div className="w-full h-full bg-gradient-to-br from-white/5 to-white/10" />
-    </div>
+    <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="flex-shrink-0 w-[280px] aspect-video rounded-xl overflow-hidden glass-card relative"
+    >
+        <div className="w-full h-full bg-gradient-to-br from-white/5 to-white/10">
+            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent shimmer" />
+        </div>
+        <div className="absolute bottom-0 left-0 right-0 p-4 space-y-2">
+            <div className="h-5 bg-white/10 rounded w-2/3" />
+            <div className="h-3 bg-white/5 rounded w-1/3" />
+        </div>
+    </motion.div>
 );
 
-// Skeleton loader for rows
+// Skeleton loader for rows with staggered animation
 export const RowSkeleton = ({ count = 5 }) => (
     <div className="space-y-4">
-        <div className="h-6 bg-white/10 rounded w-48 animate-pulse" />
+        <div className="flex items-center gap-4">
+            <div className="w-1 h-6 bg-[var(--color-accent)]/30 rounded-full" />
+            <div className="h-6 bg-white/10 rounded w-48" />
+        </div>
         <div className="flex gap-4 overflow-hidden">
             {Array.from({ length: count }).map((_, i) => (
-                <ChannelCardLargeSkeleton key={i} />
+                <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.05 }}
+                >
+                    <ChannelCardLargeSkeleton />
+                </motion.div>
             ))}
         </div>
     </div>
 );
 
-// Grid skeleton for channel grid
+// Grid skeleton for channel grid with staggered reveal
 export const GridSkeleton = ({ count = 12 }) => (
     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
         {Array.from({ length: count }).map((_, i) => (
-            <ChannelCardSkeleton key={i} />
+            <motion.div
+                key={i}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: i * 0.02, duration: 0.2 }}
+            >
+                <ChannelCardSkeleton />
+            </motion.div>
         ))}
     </div>
 );

@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Hls from 'hls.js';
-import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar, List, Info } from 'lucide-react';
+import { X, RefreshCw, Volume2, VolumeX, Maximize, Minimize, Minimize2, Play, Pause, Loader2, PictureInPicture2, AlertTriangle, SkipBack, SkipForward, Calendar, List, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { parseError } from '../utils/errors';
 import { useSettings } from '../contexts/SettingsContext';
 
-const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
+const Player = ({ channel, program, onClose, onMinimize, onPrevChannel, onNextChannel, hasPrev, hasNext }) => {
     const videoRef = useRef(null);
     const hlsRef = useRef(null);
     const containerRef = useRef(null);
@@ -23,8 +23,128 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
     const [volume, setVolume] = useState(1);
     const [currentProgram, setCurrentProgram] = useState(program || null);
     const [showInfo, setShowInfo] = useState(false);
+    const [reconnectCount, setReconnectCount] = useState(0);
+    const [bufferHealth, setBufferHealth] = useState('good'); // 'good', 'warning', 'critical'
+    const [showVolumeOSD, setShowVolumeOSD] = useState(false);
     const hideControlsTimer = useRef(null);
+    const watchdogTimer = useRef(null);
+    const volumeOSDTimer = useRef(null);
+    const lastPlaybackTime = useRef(0);
     const { settings } = useSettings();
+
+    // Monitor buffer health
+    useEffect(() => {
+        if (!isPlaying || !videoRef.current) return;
+
+        const checkBuffer = () => {
+            if (!videoRef.current) return;
+            const buffered = videoRef.current.buffered;
+            if (buffered.length > 0) {
+                const bufferedEnd = buffered.end(buffered.length - 1);
+                const bufferAhead = bufferedEnd - videoRef.current.currentTime;
+
+                if (bufferAhead < 2) {
+                    setBufferHealth('critical');
+                } else if (bufferAhead < 5) {
+                    setBufferHealth('warning');
+                } else {
+                    setBufferHealth('good');
+                }
+            }
+        };
+
+        const interval = setInterval(checkBuffer, 2000);
+        return () => clearInterval(interval);
+    }, [isPlaying]);
+
+    // Watchdog: Detect stalled playback and auto-reconnect
+    useEffect(() => {
+        if (!videoRef.current || !isPlaying || error) return;
+
+        watchdogTimer.current = setInterval(() => {
+            const video = videoRef.current;
+            if (!video) return;
+
+            // Check if playback is stalled (time hasn't advanced in 8 seconds)
+            if (video.currentTime === lastPlaybackTime.current && !video.paused && !loading) {
+                console.warn('[Watchdog] Playback stalled, attempting reconnect...');
+                setReconnectCount(prev => prev + 1);
+                startStream();
+            }
+            lastPlaybackTime.current = video.currentTime;
+        }, 8000);
+
+        return () => {
+            if (watchdogTimer.current) clearInterval(watchdogTimer.current);
+        };
+    }, [isPlaying, error, loading]);
+
+    // Keyboard shortcuts
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            // Ignore if typing in an input
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+            switch (e.key) {
+                case ' ':
+                case 'k':
+                    e.preventDefault();
+                    togglePlay();
+                    break;
+                case 'Escape':
+                    e.preventDefault();
+                    onClose();
+                    break;
+                case 'f':
+                    e.preventDefault();
+                    toggleFullscreen();
+                    break;
+                case 'm':
+                    e.preventDefault();
+                    toggleMute();
+                    break;
+                case 'ArrowLeft':
+                    if (hasPrev) {
+                        e.preventDefault();
+                        onPrevChannel?.();
+                    }
+                    break;
+                case 'ArrowRight':
+                    if (hasNext) {
+                        e.preventDefault();
+                        onNextChannel?.();
+                    }
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    setVolume(v => Math.min(1, v + 0.1));
+                    if (videoRef.current) videoRef.current.volume = Math.min(1, volume + 0.1);
+                    // Show volume OSD
+                    setShowVolumeOSD(true);
+                    if (volumeOSDTimer.current) clearTimeout(volumeOSDTimer.current);
+                    volumeOSDTimer.current = setTimeout(() => setShowVolumeOSD(false), 1500);
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    setVolume(v => Math.max(0, v - 0.1));
+                    if (videoRef.current) videoRef.current.volume = Math.max(0, volume - 0.1);
+                    // Show volume OSD
+                    setShowVolumeOSD(true);
+                    if (volumeOSDTimer.current) clearTimeout(volumeOSDTimer.current);
+                    volumeOSDTimer.current = setTimeout(() => setShowVolumeOSD(false), 1500);
+                    break;
+                case 'i':
+                    e.preventDefault();
+                    setShowInfo(prev => !prev);
+                    break;
+                default:
+                    break;
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [hasPrev, hasNext, volume]);
 
     // Fetch EPG for current channel if needed
     useEffect(() => {
@@ -103,9 +223,19 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
     useEffect(() => {
         startStream();
         return () => {
+            // Cleanup HLS
             if (hlsRef.current) {
                 hlsRef.current.destroy();
                 hlsRef.current = null;
+            }
+            // Exit Picture-in-Picture if active
+            if (document.pictureInPictureElement) {
+                document.exitPictureInPicture().catch(() => { });
+            }
+            // Stop video playback
+            if (videoRef.current) {
+                videoRef.current.pause();
+                videoRef.current.src = '';
             }
         };
     }, [channel, startStream]);
@@ -307,6 +437,29 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                 )}
             </AnimatePresence>
 
+            {/* Volume OSD */}
+            <AnimatePresence>
+                {showVolumeOSD && (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.8 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8 }}
+                        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-40 pointer-events-none"
+                    >
+                        <div className="bg-black/80 backdrop-blur-xl rounded-2xl p-6 flex flex-col items-center gap-3">
+                            <Volume2 className="w-8 h-8 text-white" />
+                            <div className="w-32 h-2 bg-white/20 rounded-full overflow-hidden">
+                                <div
+                                    className="h-full bg-[var(--color-accent)] rounded-full transition-all"
+                                    style={{ width: `${volume * 100}%` }}
+                                />
+                            </div>
+                            <span className="text-sm text-white font-medium">{Math.round(volume * 100)}%</span>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
             {/* Error Overlay */}
             {error && (
                 <div className="absolute inset-0 flex items-center justify-center z-20 bg-black/90">
@@ -347,6 +500,18 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                                             <span className="badge-live">LIVE</span>
                                         ) : (
                                             <span className="px-2 py-0.5 rounded text-xs font-bold bg-blue-500 text-white">VOD</span>
+                                        )}
+                                        {/* Buffer health indicator */}
+                                        {bufferHealth !== 'good' && (
+                                            <span className={`px-2 py-0.5 rounded text-xs font-bold flex items-center gap-1 ${bufferHealth === 'critical' ? 'bg-red-500' : 'bg-yellow-500'} text-white`}>
+                                                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                                {bufferHealth === 'critical' ? 'Buffering' : 'Lent'}
+                                            </span>
+                                        )}
+                                        {reconnectCount > 0 && (
+                                            <span className="px-2 py-0.5 rounded text-xs bg-orange-500/20 text-orange-400 flex items-center gap-1">
+                                                ↻ {reconnectCount}
+                                            </span>
                                         )}
                                         <span className="text-sm text-[var(--color-text-secondary)]">
                                             {formatTime(currentTime)} / {isLive ? '--:--' : formatTime(duration)}
@@ -519,6 +684,11 @@ const Player = ({ channel, program, onClose, onPrevChannel, onNextChannel, hasPr
                                     <button onClick={() => setShowInfo(!showInfo)} className={`p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer ${showInfo ? 'text-[var(--color-accent)] bg-white/10' : ''}`} title="Informations programme">
                                         <Info className="w-5 h-5" />
                                     </button>
+                                    {onMinimize && (
+                                        <button onClick={onMinimize} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer" title="Mini lecteur">
+                                            <Minimize2 className="w-5 h-5" />
+                                        </button>
+                                    )}
                                     <button onClick={toggleFullscreen} className="p-3 rounded-full hover:bg-white/10 transition-colors cursor-pointer">
                                         {isFullscreen ? <Minimize className="w-6 h-6" /> : <Maximize className="w-6 h-6" />}
                                     </button>

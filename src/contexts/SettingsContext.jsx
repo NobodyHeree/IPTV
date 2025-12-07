@@ -137,7 +137,6 @@ export const SettingsProvider = ({ children }) => {
         updateSetting,
         saveSettings,
         restartApp,
-        restartApp,
         clearCache: async () => {
             try {
                 const result = await window.api.clearCache();
